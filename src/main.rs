@@ -2,22 +2,39 @@ use std::env;
 use std::io;
 use std::process;
 use std::collections::HashSet;
+use std::iter::Peekable;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Pattern {
     StartAnchor,
     EndAnchor,
     Digit,
     Word,
-    Lit(String),
+    Lit(char),
     Group { set: HashSet<char>, neg: bool },
     OneOrMore(Box<Pattern>)
+}
+
+fn patterns_equivalent(p1: &Pattern, p2: &Pattern) -> bool {
+    match (p1, p2) {
+        (Pattern::StartAnchor, Pattern::StartAnchor) => true,
+        (Pattern::EndAnchor, Pattern::EndAnchor) => true,
+        (Pattern::Digit, Pattern::Digit) => true,
+        (Pattern::Word, Pattern::Word) => true,
+        (Pattern::Lit(c1), Pattern::Lit(c2)) => c1 == c2,
+        (Pattern::Group { set: s1, neg: n1 }, Pattern::Group { set: s2, neg: n2 }) => {
+            s1 == s2 && n1 == n2
+        },
+        (Pattern::OneOrMore(inner1), Pattern::OneOrMore(inner2)) => {
+            patterns_equivalent(inner1, inner2)
+        },
+        _ => false,
+    }
 }
 
 fn compile_pattern(pat: &str) -> Result<Vec<Pattern>, &'static str> {
     let mut it = pat.chars().peekable();
     let mut patterns = Vec::new();
-    let mut literal_buffer = String::new();
 
     if let Some('^') = it.peek().copied() {
         patterns.push(Pattern::StartAnchor);
@@ -27,68 +44,54 @@ fn compile_pattern(pat: &str) -> Result<Vec<Pattern>, &'static str> {
     while let Some(c) = it.peek().copied() {
         match c {
             '\\' => {
-                if !literal_buffer.is_empty() {
-                    patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
-                }
                 it.next();
                 match it.next() {
                     Some('d') => patterns.push(Pattern::Digit),
                     Some('w') => patterns.push(Pattern::Word),
-                    Some(x) => patterns.push(Pattern::Lit(x.to_string())),
+                    Some(x) => patterns.push(Pattern::Lit(x)),
                     None => return Err("dangling backslash in pattern"),
                 }
             },
             '[' => {
-                if !literal_buffer.is_empty() {
-                    patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
-                }
-                let group_result = compile_group(&mut it);
-                match group_result {
-                    Ok(p) => patterns.push(p),
-                    Err(_) => {
-                        let remaining_str: String = it.by_ref().collect();
-                        let unclosed_lit = format!("[{}", remaining_str);
-                        patterns.push(Pattern::Lit(unclosed_lit));
-                        return Ok(patterns);
-                    }
-                }
+                it.next();
+                let group = compile_group(&mut it)?;
+                patterns.push(group);
             },
-            '+' => {
-                if !literal_buffer.is_empty() {
-                    let last_char = literal_buffer.pop().unwrap();
-                    patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
-                    patterns.push(Pattern::OneOrMore(Box::new(Pattern::Lit(last_char.to_string()))));
-                    it.next();
+            '$' => {
+                it.next();
+                if it.peek().is_some() {
+                    patterns.push(Pattern::Lit('$'));
                 } else {
-                    return Err("Dangling '+'");
+                    patterns.push(Pattern::EndAnchor);
                 }
             },
             _ => {
-                literal_buffer.push(c);
+                patterns.push(Pattern::Lit(c));
                 it.next();
             }
         }
-    }
-    if literal_buffer.ends_with('$') {
-        literal_buffer.pop();
-        if !literal_buffer.is_empty() {
-            patterns.push(Pattern::Lit(literal_buffer));
-        }
-        patterns.push(Pattern::EndAnchor);
-    } else {
-        if !literal_buffer.is_empty() {
-            patterns.push(Pattern::Lit(literal_buffer));
+
+        if let Some('+') = it.peek().copied() {
+            it.next();
+            let last_pattern = patterns.pop().ok_or("Dangling '+'")?;
+            patterns.push(Pattern::OneOrMore(Box::new(last_pattern)));
         }
     }
+
+    if let Some(Pattern::Lit(last_char)) = patterns.last() {
+        if *last_char == '$' {
+            patterns.pop();
+            patterns.push(Pattern::EndAnchor);
+        }
+    }
+
     Ok(patterns)
 }
 
-fn compile_group<I>(it: &mut std::iter::Peekable<I>) -> Result<Pattern, &'static str>
+fn compile_group<I>(it: &mut Peekable<I>) -> Result<Pattern, &'static str>
 where
     I: Iterator<Item = char>,
 {
-    it.next();
-    
     let mut neg = false;
     if let Some('^') = it.peek().copied() {
         it.next();
@@ -111,7 +114,7 @@ where
     Err("unclosed character group")
 }
 
-fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern) -> bool {
+fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern, remaining_patterns: &[Pattern]) -> bool {
     match pattern {
         Pattern::StartAnchor => {
             *input_idx == 0
@@ -126,7 +129,7 @@ fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern) -> bo
             } else {
                 false
             }
-        }
+        },
         Pattern::Word => {
             if *input_idx < chars.len() && (chars[*input_idx].is_alphanumeric() || chars[*input_idx] == '_') {
                 *input_idx += 1;
@@ -134,15 +137,15 @@ fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern) -> bo
             } else {
                 false
             }
-        }
-        Pattern::Lit(s) => {
-            if *input_idx + s.len() <= chars.len() && chars[*input_idx..*input_idx + s.len()].iter().collect::<String>() == *s {
-                *input_idx += s.len();
+        },
+        Pattern::Lit(c) => {
+            if *input_idx < chars.len() && chars[*input_idx] == *c {
+                *input_idx += 1;
                 true
             } else {
                 false
             }
-        }
+        },
         Pattern::Group { set, neg } => {
             if *input_idx < chars.len() {
                 let hit = set.contains(&chars[*input_idx]);
@@ -155,21 +158,42 @@ fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern) -> bo
             } else {
                 false
             }
-        }
+        },
         Pattern::OneOrMore(inner) => {
-            let mut matched_count = 0;
+            let mut matched_count: usize = 0;
             let original_idx = *input_idx;
             
-            while matches_token(chars, input_idx, &**inner) {
+            while matches_token(chars, input_idx, &**inner, &[]) {
                 matched_count += 1;
             }
 
-            if matched_count > 0 {
-                true
-            } else {
+            if matched_count == 0 {
                 *input_idx = original_idx;
-                false
+                return false;
             }
+
+            let mut reserved_count = 0;
+            for remaining_pattern in remaining_patterns {
+                if patterns_equivalent(remaining_pattern, &**inner) {
+                    reserved_count += 1;
+                } else {
+                    break;
+                }
+            }
+
+            let usable_count = matched_count.saturating_sub(reserved_count);
+            
+            if usable_count == 0 {
+                *input_idx = original_idx;
+                return false;
+            }
+
+            *input_idx = original_idx;
+            for _ in 0..usable_count {
+                matches_token(chars, input_idx, &**inner, &[]);
+            }
+            
+            true
         }
     }
 }
@@ -183,7 +207,7 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
         return false;
     }
     println!("Pattern: \"{}\"", pattern);
-    print!("Compiled Patterns: {:?}", patterns);
+    println!("Compiled Patterns: {:?}", patterns);
 
     let chars: Vec<char> = input_line.chars().collect();
 
@@ -198,9 +222,11 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
         let mut all_match = true;
         println!("\nAttempting match starting at index {} (char '{}')", i, chars.get(i).unwrap_or(&' '));
         
-        for p in &patterns {
+        for (pattern_idx, p) in patterns.iter().enumerate() {
             let start_idx = input_idx;
-            if !matches_token(&chars, &mut input_idx, p) {
+            let remaining = &patterns[pattern_idx + 1..];
+
+            if !matches_token(&chars, &mut input_idx, p, remaining) {
                 all_match = false;
                 println!("  -> Pattern failed to match at index {}", start_idx);
                 break;
