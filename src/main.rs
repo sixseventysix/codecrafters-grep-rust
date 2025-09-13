@@ -124,21 +124,13 @@ fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern) -> bo
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
     let patterns = match compile_pattern(pattern) {
         Ok(p) => p,
-        Err(e) => {
-            eprintln!("Error compiling pattern: {}", e);
-            return false;
-        }
+        Err(_) => return false,
     };
-
     if patterns.is_empty() {
         return false;
     }
-
     let chars: Vec<char> = input_line.chars().collect();
-    if chars.is_empty() {
-        return patterns.is_empty();
-    }
-
+    // Iterate through every possible starting position
     for i in 0..=chars.len() {
         let mut input_idx = i;
         let mut all_match = true;
