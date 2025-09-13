@@ -13,6 +13,8 @@ pub enum Pattern {
     Lit(char),
     Group { set: HashSet<char>, neg: bool },
     OneOrMore(Box<Pattern>),
+    ZeroOrMore(Box<Pattern>),
+    ZeroOrOne(Box<Pattern>),
 }
 
 impl Pattern {
@@ -27,6 +29,12 @@ impl Pattern {
                 s1 == s2 && n1 == n2
             },
             (Pattern::OneOrMore(inner1), Pattern::OneOrMore(inner2)) => {
+                inner1.is_equivalent(inner2)
+            },
+            (Pattern::ZeroOrMore(inner1), Pattern::ZeroOrMore(inner2)) => {
+                inner1.is_equivalent(inner2)
+            },
+            (Pattern::ZeroOrOne(inner1), Pattern::ZeroOrOne(inner2)) => {
                 inner1.is_equivalent(inner2)
             },
             _ => false,
@@ -73,10 +81,23 @@ impl Parser {
 
             patterns.push(pattern);
 
-            if chars.peek() == Some(&'+') {
-                chars.next();
-                let last_pattern = patterns.pop().ok_or(ParseError::DanglingPlus)?;
-                patterns.push(Pattern::OneOrMore(Box::new(last_pattern)));
+            match chars.peek() {
+                Some('+') => {
+                    chars.next();
+                    let last_pattern = patterns.pop().ok_or(ParseError::DanglingPlus)?;
+                    patterns.push(Pattern::OneOrMore(Box::new(last_pattern)));
+                },
+                Some('*') => {
+                    chars.next();
+                    let last_pattern = patterns.pop().ok_or(ParseError::DanglingPlus)?;
+                    patterns.push(Pattern::ZeroOrMore(Box::new(last_pattern)));
+                },
+                Some('?') => {
+                    chars.next();
+                    let last_pattern = patterns.pop().ok_or(ParseError::DanglingPlus)?;
+                    patterns.push(Pattern::ZeroOrOne(Box::new(last_pattern)));
+                },
+                _ => {},
             }
         }
 
@@ -228,6 +249,8 @@ impl<'a> Matcher<'a> {
             Pattern::Lit(c) => self.match_literal(input_idx, *c),
             Pattern::Group { set, neg } => self.match_group(input_idx, set, *neg),
             Pattern::OneOrMore(inner) => self.match_one_or_more(input_idx, inner, remaining_patterns),
+            Pattern::ZeroOrMore(inner) => self.match_zero_or_more(input_idx, inner, remaining_patterns),
+            Pattern::ZeroOrOne(inner) => self.match_zero_or_one(input_idx, inner, remaining_patterns),
         }
     }
 
@@ -298,6 +321,38 @@ impl<'a> Matcher<'a> {
             self.match_pattern(input_idx, inner, &[]);
         }
 
+        true
+    }
+
+    fn match_zero_or_more(&self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
+        let original_idx = *input_idx;
+        let mut matched_count: usize = 0;
+
+        while self.match_pattern(input_idx, inner, &[]) {
+            matched_count += 1;
+        }
+
+        let reserved_count = self.count_equivalent_patterns(inner, remaining_patterns);
+        let usable_count = matched_count.saturating_sub(reserved_count);
+
+        *input_idx = original_idx;
+        for _ in 0..usable_count {
+            self.match_pattern(input_idx, inner, &[]);
+        }
+
+        true
+    }
+
+    fn match_zero_or_one(&self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
+        let original_idx = *input_idx;
+
+        if self.match_pattern(input_idx, inner, &[]) {
+            let reserved_count = self.count_equivalent_patterns(inner, remaining_patterns);
+            if reserved_count > 0 {
+                *input_idx = original_idx;
+            }
+        }
+        
         true
     }
 
