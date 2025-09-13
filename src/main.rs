@@ -5,6 +5,7 @@ use std::collections::HashSet;
 
 #[derive(Debug)]
 enum Pattern {
+    StartAnchor,
     Digit,
     Word,
     Lit(String),
@@ -15,6 +16,11 @@ fn compile_pattern(pat: &str) -> Result<Vec<Pattern>, &'static str> {
     let mut it = pat.chars().peekable();
     let mut patterns = Vec::new();
     let mut literal_buffer = String::new();
+
+    if let Some('^') = it.peek().copied() {
+        patterns.push(Pattern::StartAnchor);
+        it.next();
+    }
 
     while let Some(c) = it.peek().copied() {
         match c {
@@ -87,6 +93,9 @@ where
 
 fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern) -> bool {
     match pattern {
+        Pattern::StartAnchor => {
+            *input_idx == 0
+        },
         Pattern::Digit => {
             if *input_idx < chars.len() && chars[*input_idx].is_ascii_digit() {
                 *input_idx += 1;
@@ -140,7 +149,13 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
 
     let chars: Vec<char> = input_line.chars().collect();
 
-    for i in 0..=chars.len() {
+    let start_indices: Vec<usize> = if matches!(patterns.first(), Some(Pattern::StartAnchor)) {
+        vec![0]
+    } else {
+        (0..=chars.len()).collect()
+    };
+    
+    for i in start_indices {
         let mut input_idx = i;
         let mut all_match = true;
         println!("\nAttempting match starting at index {} (char '{}')", i, chars.get(i).unwrap_or(&' '));
