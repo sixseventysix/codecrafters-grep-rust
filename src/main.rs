@@ -17,33 +17,42 @@ fn compile_pattern(pat: &str) -> Result<Vec<Pattern>, &'static str> {
     let mut literal_buffer = String::new();
 
     while let Some(c) = it.peek().copied() {
-        if c == '\\' {
-            it.next();
-            if let Some(next_char) = it.next() {
+        match c {
+            '\\' => {
                 if !literal_buffer.is_empty() {
                     patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
                 }
-                match next_char {
-                    'd' => patterns.push(Pattern::Digit),
-                    'w' => patterns.push(Pattern::Word),
-                    _ => patterns.push(Pattern::Lit(String::from(next_char))),
+                it.next();
+                match it.next() {
+                    Some('d') => patterns.push(Pattern::Digit),
+                    Some('w') => patterns.push(Pattern::Word),
+                    Some(x) => patterns.push(Pattern::Lit(x.to_string())),
+                    None => return Err("dangling backslash in pattern"),
                 }
-            } else {
-                return Err("dangling backslash in pattern");
+            },
+            '[' => {
+                if !literal_buffer.is_empty() {
+                    patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
+                }
+                let group_result = compile_group(&mut it);
+                match group_result {
+                    Ok(p) => patterns.push(p),
+                    Err(_) => {
+                        let remaining_str: String = it.by_ref().collect();
+                        let unclosed_lit = format!("[{}", remaining_str);
+                        patterns.push(Pattern::Lit(unclosed_lit));
+                        return Ok(patterns);
+                    }
+                }
+            },
+            _ => {
+                literal_buffer.push(c);
+                it.next();
             }
-        } else if c == '[' {
-            if !literal_buffer.is_empty() {
-                patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
-            }
-            it.next();
-            patterns.push(compile_group(&mut it)?);
-        } else {
-            literal_buffer.push(c);
-            it.next();
         }
     }
     if !literal_buffer.is_empty() {
-        patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
+        patterns.push(Pattern::Lit(literal_buffer));
     }
     Ok(patterns)
 }
@@ -52,6 +61,8 @@ fn compile_group<I>(it: &mut std::iter::Peekable<I>) -> Result<Pattern, &'static
 where
     I: Iterator<Item = char>,
 {
+    it.next();
+    
     let mut neg = false;
     if let Some('^') = it.peek().copied() {
         it.next();
@@ -59,20 +70,10 @@ where
     }
 
     let mut set = HashSet::new();
-    let mut lit_storage = String::new();
-
     while let Some(ch) = it.next() {
         if ch == ']' {
-
-            if !lit_storage.is_empty() {
-
-                return Ok(Pattern::Lit(format!("[{}", lit_storage)));
-            }
             return Ok(Pattern::Group { set, neg });
         }
-
-        lit_storage.push(ch);
-
         if ch == '\\' {
             if let Some(esc) = it.next() {
                 set.insert(esc);
@@ -81,7 +82,6 @@ where
             set.insert(ch);
         }
     }
-
     Err("unclosed character group")
 }
 
@@ -135,20 +135,29 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
     if patterns.is_empty() {
         return false;
     }
+    println!("Pattern: \"{}\"", pattern);
+    print!("Compiled Patterns: {:?}", patterns);
 
     let chars: Vec<char> = input_line.chars().collect();
+
     for i in 0..=chars.len() {
         let mut input_idx = i;
         let mut all_match = true;
+        println!("\nAttempting match starting at index {} (char '{}')", i, chars.get(i).unwrap_or(&' '));
         
         for p in &patterns {
+            let start_idx = input_idx;
             if !matches_token(&chars, &mut input_idx, p) {
                 all_match = false;
+                println!("  -> Pattern failed to match at index {}", start_idx);
                 break;
+            } else {
+                println!("  -> Pattern matched! New index is {}", input_idx);
             }
         }
         
         if all_match {
+            println!("\n--- Full match found! ---");
             return true;
         }
     }
