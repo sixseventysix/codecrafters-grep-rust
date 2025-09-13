@@ -10,6 +10,7 @@ pub enum Pattern {
     EndAnchor,
     Digit,
     Word,
+    Wildcard,
     Lit(char),
     Group { set: HashSet<char>, neg: bool },
     OneOrMore(Box<Pattern>),
@@ -24,6 +25,7 @@ impl Pattern {
             (Pattern::EndAnchor, Pattern::EndAnchor) => true,
             (Pattern::Digit, Pattern::Digit) => true,
             (Pattern::Word, Pattern::Word) => true,
+            (Pattern::Wildcard, Pattern::Wildcard) => true,
             (Pattern::Lit(c1), Pattern::Lit(c2)) => c1 == c2,
             (Pattern::Group { set: s1, neg: n1 }, Pattern::Group { set: s2, neg: n2 }) => {
                 s1 == s2 && n1 == n2
@@ -76,6 +78,7 @@ impl Parser {
                 '\\' => Self::parse_escape(&mut chars)?,
                 '[' => Self::parse_group(&mut chars)?,
                 '$' => Self::parse_dollar(&mut chars),
+                '.' => Self::parse_wildcard(&mut chars),
                 _ => Self::parse_literal(&mut chars),
             };
 
@@ -151,6 +154,11 @@ impl Parser {
         } else {
             Pattern::EndAnchor
         }
+    }
+
+    fn parse_wildcard(chars: &mut Peekable<std::str::Chars>) -> Pattern {
+        chars.next();
+        Pattern::Wildcard
     }
 
     fn parse_literal(chars: &mut Peekable<std::str::Chars>) -> Pattern {
@@ -246,6 +254,7 @@ impl<'a> Matcher<'a> {
             Pattern::EndAnchor => *input_idx == self.input.len(),
             Pattern::Digit => self.match_digit(input_idx),
             Pattern::Word => self.match_word(input_idx),
+            Pattern::Wildcard => self.match_wildcard(input_idx), 
             Pattern::Lit(c) => self.match_literal(input_idx, *c),
             Pattern::Group { set, neg } => self.match_group(input_idx, set, *neg),
             Pattern::OneOrMore(inner) => self.match_one_or_more(input_idx, inner, remaining_patterns),
@@ -272,6 +281,15 @@ impl<'a> Matcher<'a> {
             }
         }
         false
+    }
+
+    fn match_wildcard(&self, input_idx: &mut usize) -> bool {
+        if *input_idx < self.input.len() {
+            *input_idx += 1;
+            true
+        } else {
+            false
+        }
     }
 
     fn match_literal(&self, input_idx: &mut usize, literal: char) -> bool {
