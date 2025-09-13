@@ -13,8 +13,13 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
         return input_line.chars().any(|c| c.is_alphanumeric() || c == '_');
     }
     else if pattern.starts_with('[') && pattern.ends_with(']') {
-        let positive_characters = pattern[1..pattern.len()-1].chars().collect::<Vec<char>>();
-        return input_line.chars().any(|c| positive_characters.contains(&c));
+        if pattern[1] == '^' {
+            let negative_characters = pattern[2..pattern.len()-1].chars().collect::<Vec<char>>();
+            return input_line.chars().any(|c| !negative_characters.contains(&c));
+        } else {
+            let positive_characters = pattern[1..pattern.len()-1].chars().collect::<Vec<char>>();
+            return input_line.chars().any(|c| positive_characters.contains(&c));
+        }
     }
     else {
         panic!("Unhandled pattern: {}", pattern)
