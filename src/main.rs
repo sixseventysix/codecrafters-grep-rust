@@ -1,6 +1,7 @@
 use std::env;
 use std::io;
 use std::process;
+use std::collections::HashSet;
 
 fn match_pattern(input_line: &str, pattern: &str) -> bool {
     if pattern.chars().count() == 1 {
@@ -12,13 +13,13 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
     else if pattern == r"\w" {
         return input_line.chars().any(|c| c.is_alphanumeric() || c == '_');
     }
-    else if pattern.starts_with('[') && pattern.ends_with(']') {
-        if pattern[1] == '^' {
-            let negative_characters = pattern[2..pattern.len()-1].chars().collect::<Vec<char>>();
-            return input_line.chars().any(|c| !negative_characters.contains(&c));
+    else if let Some(inner) = pattern.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+        if let Some(body) = inner.strip_prefix('^') {
+            let set: HashSet<char> = body.chars().collect();
+            return input_line.chars().any(|c| !set.contains(&c));
         } else {
-            let positive_characters = pattern[1..pattern.len()-1].chars().collect::<Vec<char>>();
-            return input_line.chars().any(|c| positive_characters.contains(&c));
+            let set: HashSet<char> = inner.chars().collect();
+            return input_line.chars().any(|c| set.contains(&c));
         }
     }
     else {
