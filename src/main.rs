@@ -375,9 +375,18 @@ impl<'a> Matcher<'a> {
     }
 
     fn count_equivalent_patterns(&self, target: &Pattern, patterns: &[Pattern]) -> usize {
-        patterns.iter()
-            .take_while(|&p| target.is_equivalent(p))
-            .count()
+        let mut count = 0;
+        for pattern in patterns {
+            match (target, pattern) {
+                _ if target.is_equivalent(pattern) => count += 1,
+                (Pattern::Wildcard, Pattern::Lit(_)) |
+                (Pattern::Wildcard, Pattern::Digit) |
+                (Pattern::Wildcard, Pattern::Word) |
+                (Pattern::Wildcard, Pattern::Group { .. }) => count += 1,
+                _ => break,
+            }
+        }
+        count
     }
 }
 
