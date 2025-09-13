@@ -11,6 +11,7 @@ enum Pattern {
     Word,
     Lit(String),
     Group { set: HashSet<char>, neg: bool },
+    OneOrMore(Box<Pattern>)
 }
 
 fn compile_pattern(pat: &str) -> Result<Vec<Pattern>, &'static str> {
@@ -50,6 +51,16 @@ fn compile_pattern(pat: &str) -> Result<Vec<Pattern>, &'static str> {
                         patterns.push(Pattern::Lit(unclosed_lit));
                         return Ok(patterns);
                     }
+                }
+            },
+            '+' => {
+                if !literal_buffer.is_empty() {
+                    let last_char = literal_buffer.pop().unwrap();
+                    patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
+                    patterns.push(Pattern::OneOrMore(Box::new(Pattern::Lit(last_char.to_string()))));
+                    it.next();
+                } else {
+                    return Err("Dangling '+'");
                 }
             },
             _ => {
@@ -142,6 +153,21 @@ fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern) -> bo
                     false
                 }
             } else {
+                false
+            }
+        }
+        Pattern::OneOrMore(inner) => {
+            let mut matched_count = 0;
+            let original_idx = *input_idx;
+            
+            while matches_token(chars, input_idx, &**inner) {
+                matched_count += 1;
+            }
+
+            if matched_count > 0 {
+                true
+            } else {
+                *input_idx = original_idx;
                 false
             }
         }
