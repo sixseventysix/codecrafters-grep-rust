@@ -6,6 +6,7 @@ use std::collections::HashSet;
 #[derive(Debug)]
 enum Pattern {
     StartAnchor,
+    EndAnchor,
     Digit,
     Word,
     Lit(String),
@@ -57,8 +58,16 @@ fn compile_pattern(pat: &str) -> Result<Vec<Pattern>, &'static str> {
             }
         }
     }
-    if !literal_buffer.is_empty() {
-        patterns.push(Pattern::Lit(literal_buffer));
+    if literal_buffer.ends_with('$') {
+        literal_buffer.pop();
+        if !literal_buffer.is_empty() {
+            patterns.push(Pattern::Lit(literal_buffer));
+        }
+        patterns.push(Pattern::EndAnchor);
+    } else {
+        if !literal_buffer.is_empty() {
+            patterns.push(Pattern::Lit(literal_buffer));
+        }
     }
     Ok(patterns)
 }
@@ -95,6 +104,9 @@ fn matches_token(chars: &[char], input_idx: &mut usize, pattern: &Pattern) -> bo
     match pattern {
         Pattern::StartAnchor => {
             *input_idx == 0
+        },
+        Pattern::EndAnchor => {
+            *input_idx == chars.len()
         },
         Pattern::Digit => {
             if *input_idx < chars.len() && chars[*input_idx].is_ascii_digit() {
