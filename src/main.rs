@@ -3,6 +3,7 @@ use std::io;
 use std::process;
 use std::collections::HashSet;
 
+#[derive(Debug)]
 enum Pattern {
     Digit,
     Word,
@@ -13,30 +14,36 @@ enum Pattern {
 fn compile_pattern(pat: &str) -> Result<Vec<Pattern>, &'static str> {
     let mut it = pat.chars().peekable();
     let mut patterns = Vec::new();
+    let mut literal_buffer = String::new();
 
     while let Some(c) = it.peek().copied() {
         if c == '\\' {
-            it.next(); // Consume '\\'
-            match it.next() {
-                Some('d') => patterns.push(Pattern::Digit),
-                Some('w') => patterns.push(Pattern::Word),
-                Some(x) => {
-                    let mut lit_str = String::from("\\");
-                    lit_str.push(x);
-                    patterns.push(Pattern::Lit(lit_str));
+            it.next();
+            if let Some(next_char) = it.next() {
+                if !literal_buffer.is_empty() {
+                    patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
                 }
-                None => return Err("dangling backslash in pattern"),
+                match next_char {
+                    'd' => patterns.push(Pattern::Digit),
+                    'w' => patterns.push(Pattern::Word),
+                    _ => patterns.push(Pattern::Lit(String::from(next_char))),
+                }
+            } else {
+                return Err("dangling backslash in pattern");
             }
         } else if c == '[' {
-            it.next(); // Consume '['
+            if !literal_buffer.is_empty() {
+                patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
+            }
+            it.next();
             patterns.push(compile_group(&mut it)?);
         } else {
-            let lit_str: String = it
-                .by_ref()
-                .take_while(|&ch| ch != '\\' && ch != '[')
-                .collect();
-            patterns.push(Pattern::Lit(lit_str));
+            literal_buffer.push(c);
+            it.next();
         }
+    }
+    if !literal_buffer.is_empty() {
+        patterns.push(Pattern::Lit(literal_buffer.drain(..).collect()));
     }
     Ok(patterns)
 }
@@ -47,24 +54,23 @@ where
 {
     let mut neg = false;
     if let Some('^') = it.peek().copied() {
-        it.next(); // Consume '^'
+        it.next();
         neg = true;
     }
 
     let mut set = HashSet::new();
-    let mut lit_storage = String::new(); // Store chars if group is unclosed
+    let mut lit_storage = String::new();
 
     while let Some(ch) = it.next() {
         if ch == ']' {
-            // If we have an unclosed group, we need to handle that first
+
             if !lit_storage.is_empty() {
-                // This shouldn't happen with the current logic, but as a safeguard.
+
                 return Ok(Pattern::Lit(format!("[{}", lit_storage)));
             }
             return Ok(Pattern::Group { set, neg });
         }
-        
-        // Accumulate characters just in case the group is not closed
+
         lit_storage.push(ch);
 
         if ch == '\\' {
@@ -75,7 +81,7 @@ where
             set.insert(ch);
         }
     }
-    // If loop finishes without finding ']', the group is unclosed
+
     Err("unclosed character group")
 }
 
@@ -129,17 +135,19 @@ fn match_pattern(input_line: &str, pattern: &str) -> bool {
     if patterns.is_empty() {
         return false;
     }
+
     let chars: Vec<char> = input_line.chars().collect();
-    // Iterate through every possible starting position
     for i in 0..=chars.len() {
         let mut input_idx = i;
         let mut all_match = true;
+        
         for p in &patterns {
             if !matches_token(&chars, &mut input_idx, p) {
                 all_match = false;
                 break;
             }
         }
+        
         if all_match {
             return true;
         }
