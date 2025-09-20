@@ -12,10 +12,12 @@ pub enum Pattern {
     Word,
     Wildcard,
     Lit(char),
-    Group { set: HashSet<char>, neg: bool },
+    CharacterClass { set: HashSet<char>, neg: bool },
     OneOrMore(Box<Pattern>),
     ZeroOrMore(Box<Pattern>),
     ZeroOrOne(Box<Pattern>),
+    Group(Vec<Pattern>),
+    Alternation(Vec<Vec<Pattern>>),
 }
 
 impl Pattern {
@@ -27,7 +29,7 @@ impl Pattern {
             (Pattern::Word, Pattern::Word) => true,
             (Pattern::Wildcard, Pattern::Wildcard) => true,
             (Pattern::Lit(c1), Pattern::Lit(c2)) => c1 == c2,
-            (Pattern::Group { set: s1, neg: n1 }, Pattern::Group { set: s2, neg: n2 }) => {
+            (Pattern::CharacterClass { set: s1, neg: n1 }, Pattern::CharacterClass { set: s2, neg: n2 }) => {
                 s1 == s2 && n1 == n2
             },
             (Pattern::OneOrMore(inner1), Pattern::OneOrMore(inner2)) => {
@@ -38,6 +40,17 @@ impl Pattern {
             },
             (Pattern::ZeroOrOne(inner1), Pattern::ZeroOrOne(inner2)) => {
                 inner1.is_equivalent(inner2)
+            },
+            (Pattern::Group(patterns1), Pattern::Group(patterns2)) => {
+                patterns1.len() == patterns2.len() &&
+                patterns1.iter().zip(patterns2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
+            },
+            (Pattern::Alternation(alts1), Pattern::Alternation(alts2)) => {
+                alts1.len() == alts2.len() &&
+                alts1.iter().zip(alts2.iter()).all(|(alt1, alt2)| {
+                    alt1.len() == alt2.len() &&
+                    alt1.iter().zip(alt2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
+                })
             },
             _ => false,
         }
@@ -50,6 +63,7 @@ pub struct Parser;
 pub enum ParseError {
     DanglingBackslash,
     DanglingPlus,
+    UnclosedCharacterClass,
     UnclosedGroup,
 }
 
@@ -58,7 +72,8 @@ impl std::fmt::Display for ParseError {
         match self {
             ParseError::DanglingBackslash => write!(f, "dangling backslash in pattern"),
             ParseError::DanglingPlus => write!(f, "dangling '+' operator"),
-            ParseError::UnclosedGroup => write!(f, "unclosed character group"),
+            ParseError::UnclosedCharacterClass => write!(f, "unclosed character class"),
+            ParseError::UnclosedGroup => write!(f, "unclosed group"),
         }
     }
 }
@@ -76,9 +91,10 @@ impl Parser {
         while let Some(&ch) = chars.peek() {
             let pattern = match ch {
                 '\\' => Self::parse_escape(&mut chars)?,
-                '[' => Self::parse_group(&mut chars)?,
+                '[' => Self::parse_character_class(&mut chars)?,
                 '$' => Self::parse_dollar(&mut chars),
                 '.' => Self::parse_wildcard(&mut chars),
+                '(' => Self::parse_group(&mut chars)?,
                 _ => Self::parse_literal(&mut chars),
             };
 
@@ -119,7 +135,7 @@ impl Parser {
         }
     }
 
-    fn parse_group(chars: &mut Peekable<std::str::Chars>) -> Result<Pattern, ParseError> {
+    fn parse_character_class(chars: &mut Peekable<std::str::Chars>) -> Result<Pattern, ParseError> {
         chars.next();
         
         let negated = if chars.peek() == Some(&'^') {
@@ -132,7 +148,7 @@ impl Parser {
         let mut set = HashSet::new();
         while let Some(ch) = chars.next() {
             match ch {
-                ']' => return Ok(Pattern::Group { set, neg: negated }),
+                ']' => return Ok(Pattern::CharacterClass { set, neg: negated }),
                 '\\' => {
                     if let Some(escaped) = chars.next() {
                         set.insert(escaped);
@@ -144,7 +160,7 @@ impl Parser {
             };
         }
         
-        Err(ParseError::UnclosedGroup)
+        Err(ParseError::UnclosedCharacterClass)
     }
 
     fn parse_dollar(chars: &mut Peekable<std::str::Chars>) -> Pattern {
@@ -164,6 +180,51 @@ impl Parser {
     fn parse_literal(chars: &mut Peekable<std::str::Chars>) -> Pattern {
         let ch = chars.next().unwrap();
         Pattern::Lit(ch)
+    }
+
+    fn parse_group(chars: &mut Peekable<std::str::Chars>) -> Result<Pattern, ParseError> {
+        chars.next();
+
+        let mut group_content = String::new();
+        let mut paren_depth = 1;
+
+        while let Some(ch) = chars.next() {
+            match ch {
+                '(' => {
+                    paren_depth += 1;
+                    group_content.push(ch);
+                },
+                ')' => {
+                    paren_depth -= 1;
+                    if paren_depth == 0 {
+                        break;
+                    } else {
+                        group_content.push(ch);
+                    }
+                },
+                c => group_content.push(c),
+            }
+        }
+
+        if paren_depth > 0 {
+            return Err(ParseError::UnclosedGroup);
+        }
+
+        if group_content.contains('|') {
+            Self::parse_alternation(&group_content)
+        } else {
+            let patterns = Self::parse(&group_content)?;
+            Ok(Pattern::Group(patterns))
+        }
+    }
+
+    fn parse_alternation(content: &str) -> Result<Pattern, ParseError> {
+        let alternatives: Result<Vec<Vec<Pattern>>, ParseError> = content
+            .split('|')
+            .map(|alt| Self::parse(alt))
+            .collect();
+
+        Ok(Pattern::Alternation(alternatives?))
     }
 
     fn cleanup_end_anchor(patterns: &mut Vec<Pattern>) {
@@ -256,10 +317,12 @@ impl<'a> Matcher<'a> {
             Pattern::Word => self.match_word(input_idx),
             Pattern::Wildcard => self.match_wildcard(input_idx), 
             Pattern::Lit(c) => self.match_literal(input_idx, *c),
-            Pattern::Group { set, neg } => self.match_group(input_idx, set, *neg),
+            Pattern::CharacterClass { set, neg } => self.match_character_class(input_idx, set, *neg),
             Pattern::OneOrMore(inner) => self.match_one_or_more(input_idx, inner, remaining_patterns),
             Pattern::ZeroOrMore(inner) => self.match_zero_or_more(input_idx, inner, remaining_patterns),
             Pattern::ZeroOrOne(inner) => self.match_zero_or_one(input_idx, inner, remaining_patterns),
+            Pattern::Group(patterns) => self.match_group(input_idx, patterns),
+            Pattern::Alternation(alternatives) => self.match_alternation(input_idx, alternatives),
         }
     }
 
@@ -301,7 +364,7 @@ impl<'a> Matcher<'a> {
         }
     }
 
-    fn match_group(&self, input_idx: &mut usize, set: &HashSet<char>, negated: bool) -> bool {
+    fn match_character_class(&self, input_idx: &mut usize, set: &HashSet<char>, negated: bool) -> bool {
         if *input_idx < self.input.len() {
             let ch = self.input[*input_idx];
             let in_set = set.contains(&ch);
@@ -374,6 +437,45 @@ impl<'a> Matcher<'a> {
         true
     }
 
+    fn match_group(&self, input_idx: &mut usize, patterns: &[Pattern]) -> bool {
+        let original_idx = *input_idx;
+
+        for pattern in patterns {
+            if !self.match_pattern(input_idx, pattern, &[]) {
+                *input_idx = original_idx;
+                return false;
+            }
+        }
+
+        true
+    }
+
+    fn match_alternation(&self, input_idx: &mut usize, alternatives: &[Vec<Pattern>]) -> bool {
+        let original_idx = *input_idx;
+
+        for alternative in alternatives {
+            *input_idx = original_idx;
+
+            let mut temp_idx = *input_idx;
+            let mut matches = true;
+
+            for pattern in alternative {
+                if !self.match_pattern(&mut temp_idx, pattern, &[]) {
+                    matches = false;
+                    break;
+                }
+            }
+
+            if matches {
+                *input_idx = temp_idx;
+                return true;
+            }
+        }
+
+        *input_idx = original_idx;
+        false
+    }
+
     fn count_equivalent_patterns(&self, target: &Pattern, patterns: &[Pattern]) -> usize {
         let mut count = 0;
         for pattern in patterns {
@@ -382,7 +484,7 @@ impl<'a> Matcher<'a> {
                 (Pattern::Wildcard, Pattern::Lit(_)) |
                 (Pattern::Wildcard, Pattern::Digit) |
                 (Pattern::Wildcard, Pattern::Word) |
-                (Pattern::Wildcard, Pattern::Group { .. }) => count += 1,
+                (Pattern::Wildcard, Pattern::CharacterClass { .. }) => count += 1,
                 _ => break,
             }
         }
