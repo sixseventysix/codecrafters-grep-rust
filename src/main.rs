@@ -17,7 +17,7 @@ pub enum Pattern {
     ZeroOrMore(Box<Pattern>),
     ZeroOrOne(Box<Pattern>),
     Group(Vec<Pattern>),
-    Alternation(Vec<Vec<Pattern>>),
+    Alternation(Vec<Pattern>, Vec<Pattern>),
 }
 
 impl Pattern {
@@ -45,12 +45,10 @@ impl Pattern {
                 patterns1.len() == patterns2.len() &&
                 patterns1.iter().zip(patterns2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
             },
-            (Pattern::Alternation(alts1), Pattern::Alternation(alts2)) => {
-                alts1.len() == alts2.len() &&
-                alts1.iter().zip(alts2.iter()).all(|(alt1, alt2)| {
-                    alt1.len() == alt2.len() &&
-                    alt1.iter().zip(alt2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
-                })
+            (Pattern::Alternation(left1, right1), Pattern::Alternation(left2, right2)) => {
+                left1.len() == left2.len() && right1.len() == right2.len() &&
+                left1.iter().zip(left2.iter()).all(|(p1, p2)| p1.is_equivalent(p2)) &&
+                right1.iter().zip(right2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
             },
             _ => false,
         }
@@ -80,6 +78,10 @@ impl std::fmt::Display for ParseError {
 
 impl Parser {
     pub fn parse(pattern: &str) -> Result<Vec<Pattern>, ParseError> {
+        if pattern.contains('|') && !Self::is_inside_group(pattern) {
+            return Self::parse_top_level_alternation(pattern);
+        }
+
         let mut chars = pattern.chars().peekable();
         let mut patterns = Vec::new();
 
@@ -123,6 +125,33 @@ impl Parser {
         Self::cleanup_end_anchor(&mut patterns);
 
         Ok(patterns)
+    }
+
+    fn is_inside_group(pattern: &str) -> bool {
+        let mut depth = 0;
+        for ch in pattern.chars() {
+            match ch {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                '|' if depth == 0 => return false,
+                _ => {}
+            }
+        }
+        true
+    }
+
+    fn parse_top_level_alternation(pattern: &str) -> Result<Vec<Pattern>, ParseError> {
+        if let Some(pipe_pos) = pattern.find('|') {
+            let left_part = &pattern[..pipe_pos];
+            let right_part = &pattern[pipe_pos + 1..];
+
+            let left_patterns = Self::parse(left_part)?;
+            let right_patterns = Self::parse(right_part)?;
+
+            Ok(vec![Pattern::Alternation(left_patterns, right_patterns)])
+        } else {
+            Self::parse(pattern)
+        }
     }
 
     fn parse_escape(chars: &mut Peekable<std::str::Chars>) -> Result<Pattern, ParseError> {
@@ -219,12 +248,18 @@ impl Parser {
     }
 
     fn parse_alternation(content: &str) -> Result<Pattern, ParseError> {
-        let alternatives: Result<Vec<Vec<Pattern>>, ParseError> = content
-            .split('|')
-            .map(|alt| Self::parse(alt))
-            .collect();
+        if let Some(pipe_pos) = content.find('|') {
+            let left_part = &content[..pipe_pos];
+            let right_part = &content[pipe_pos + 1..];
 
-        Ok(Pattern::Alternation(alternatives?))
+            let left_patterns = Self::parse(left_part)?;
+            let right_patterns = Self::parse(right_part)?;
+
+            Ok(Pattern::Alternation(left_patterns, right_patterns))
+        } else {
+            let patterns = Self::parse(content)?;
+            Ok(Pattern::Group(patterns))
+        }
     }
 
     fn cleanup_end_anchor(patterns: &mut Vec<Pattern>) {
@@ -322,7 +357,7 @@ impl<'a> Matcher<'a> {
             Pattern::ZeroOrMore(inner) => self.match_zero_or_more(input_idx, inner, remaining_patterns),
             Pattern::ZeroOrOne(inner) => self.match_zero_or_one(input_idx, inner, remaining_patterns),
             Pattern::Group(patterns) => self.match_group(input_idx, patterns),
-            Pattern::Alternation(alternatives) => self.match_alternation(input_idx, alternatives),
+            Pattern::Alternation(left, right) => self.match_alternation(input_idx, left, right),
         }
     }
 
@@ -450,26 +485,38 @@ impl<'a> Matcher<'a> {
         true
     }
 
-    fn match_alternation(&self, input_idx: &mut usize, alternatives: &[Vec<Pattern>]) -> bool {
+    fn match_alternation(&self, input_idx: &mut usize, left: &[Pattern], right: &[Pattern]) -> bool {
         let original_idx = *input_idx;
 
-        for alternative in alternatives {
-            *input_idx = original_idx;
-
-            let mut temp_idx = *input_idx;
-            let mut matches = true;
-
-            for pattern in alternative {
-                if !self.match_pattern(&mut temp_idx, pattern, &[]) {
-                    matches = false;
-                    break;
-                }
+        // Try left alternative
+        let mut temp_idx = *input_idx;
+        let mut left_matches = true;
+        for pattern in left {
+            if !self.match_pattern(&mut temp_idx, pattern, &[]) {
+                left_matches = false;
+                break;
             }
+        }
 
-            if matches {
-                *input_idx = temp_idx;
-                return true;
+        if left_matches {
+            *input_idx = temp_idx;
+            return true;
+        }
+
+        // Try right alternative
+        *input_idx = original_idx;
+        let mut temp_idx = *input_idx;
+        let mut right_matches = true;
+        for pattern in right {
+            if !self.match_pattern(&mut temp_idx, pattern, &[]) {
+                right_matches = false;
+                break;
             }
+        }
+
+        if right_matches {
+            *input_idx = temp_idx;
+            return true;
         }
 
         *input_idx = original_idx;
