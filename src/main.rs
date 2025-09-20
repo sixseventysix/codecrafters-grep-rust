@@ -246,7 +246,8 @@ impl Parser {
         }
 
         if group_content.contains('|') {
-            Self::parse_alternation(&group_content)
+            let alternation = Self::parse_alternation(&group_content)?;
+            Ok(Pattern::Group(vec![alternation]))
         } else {
             let patterns = Self::parse(&group_content)?;
             Ok(Pattern::Group(patterns))
