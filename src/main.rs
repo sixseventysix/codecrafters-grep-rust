@@ -1,8 +1,8 @@
+use std::collections::HashSet;
 use std::env;
 use std::io;
-use std::process;
-use std::collections::HashSet;
 use std::iter::Peekable;
+use std::process;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Pattern {
@@ -30,27 +30,39 @@ impl Pattern {
             (Pattern::Word, Pattern::Word) => true,
             (Pattern::Wildcard, Pattern::Wildcard) => true,
             (Pattern::Lit(c1), Pattern::Lit(c2)) => c1 == c2,
-            (Pattern::CharacterClass { set: s1, neg: n1 }, Pattern::CharacterClass { set: s2, neg: n2 }) => {
-                s1 == s2 && n1 == n2
-            },
+            (
+                Pattern::CharacterClass { set: s1, neg: n1 },
+                Pattern::CharacterClass { set: s2, neg: n2 },
+            ) => s1 == s2 && n1 == n2,
             (Pattern::OneOrMore(inner1), Pattern::OneOrMore(inner2)) => {
                 inner1.is_equivalent(inner2)
-            },
+            }
             (Pattern::ZeroOrMore(inner1), Pattern::ZeroOrMore(inner2)) => {
                 inner1.is_equivalent(inner2)
-            },
+            }
             (Pattern::ZeroOrOne(inner1), Pattern::ZeroOrOne(inner2)) => {
                 inner1.is_equivalent(inner2)
-            },
+            }
             (Pattern::Group(patterns1, num1), Pattern::Group(patterns2, num2)) => {
-                num1 == num2 && patterns1.len() == patterns2.len() &&
-                patterns1.iter().zip(patterns2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
-            },
+                num1 == num2
+                    && patterns1.len() == patterns2.len()
+                    && patterns1
+                        .iter()
+                        .zip(patterns2.iter())
+                        .all(|(p1, p2)| p1.is_equivalent(p2))
+            }
             (Pattern::Alternation(left1, right1), Pattern::Alternation(left2, right2)) => {
-                left1.len() == left2.len() && right1.len() == right2.len() &&
-                left1.iter().zip(left2.iter()).all(|(p1, p2)| p1.is_equivalent(p2)) &&
-                right1.iter().zip(right2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
-            },
+                left1.len() == left2.len()
+                    && right1.len() == right2.len()
+                    && left1
+                        .iter()
+                        .zip(left2.iter())
+                        .all(|(p1, p2)| p1.is_equivalent(p2))
+                    && right1
+                        .iter()
+                        .zip(right2.iter())
+                        .all(|(p1, p2)| p1.is_equivalent(p2))
+            }
             (Pattern::Backreference(n1), Pattern::Backreference(n2)) => n1 == n2,
             _ => false,
         }
@@ -116,18 +128,18 @@ impl Parser {
                     chars.next();
                     let last_pattern = patterns.pop().ok_or(ParseError::DanglingPlus)?;
                     patterns.push(Pattern::OneOrMore(Box::new(last_pattern)));
-                },
+                }
                 Some('*') => {
                     chars.next();
                     let last_pattern = patterns.pop().ok_or(ParseError::DanglingPlus)?;
                     patterns.push(Pattern::ZeroOrMore(Box::new(last_pattern)));
-                },
+                }
                 Some('?') => {
                     chars.next();
                     let last_pattern = patterns.pop().ok_or(ParseError::DanglingPlus)?;
                     patterns.push(Pattern::ZeroOrOne(Box::new(last_pattern)));
-                },
-                _ => {},
+                }
+                _ => {}
             }
         }
 
@@ -147,7 +159,10 @@ impl Parser {
         true
     }
 
-    fn parse_top_level_alternation_with_counter(pattern: &str, counter: &mut usize) -> Result<Vec<Pattern>, ParseError> {
+    fn parse_top_level_alternation_with_counter(
+        pattern: &str,
+        counter: &mut usize,
+    ) -> Result<Vec<Pattern>, ParseError> {
         if let Some(pipe_pos) = pattern.find('|') {
             let left_part = &pattern[..pipe_pos];
             let right_part = &pattern[pipe_pos + 1..];
@@ -169,7 +184,7 @@ impl Parser {
             Some(c) if c.is_ascii_digit() => {
                 let digit = c.to_digit(10).unwrap() as usize;
                 Ok(Pattern::Backreference(digit))
-            },
+            }
             Some(c) => Ok(Pattern::Lit(c)),
             None => Err(ParseError::DanglingBackslash),
         }
@@ -177,7 +192,7 @@ impl Parser {
 
     fn parse_character_class(chars: &mut Peekable<std::str::Chars>) -> Result<Pattern, ParseError> {
         chars.next();
-        
+
         let negated = if chars.peek() == Some(&'^') {
             chars.next();
             true
@@ -193,13 +208,13 @@ impl Parser {
                     if let Some(escaped) = chars.next() {
                         set.insert(escaped);
                     }
-                },
+                }
                 c => {
                     set.insert(c);
-                },
+                }
             };
         }
-        
+
         Err(ParseError::UnclosedCharacterClass)
     }
 
@@ -222,7 +237,10 @@ impl Parser {
         Pattern::Lit(ch)
     }
 
-    fn parse_group_with_counter(chars: &mut Peekable<std::str::Chars>, counter: &mut usize) -> Result<Pattern, ParseError> {
+    fn parse_group_with_counter(
+        chars: &mut Peekable<std::str::Chars>,
+        counter: &mut usize,
+    ) -> Result<Pattern, ParseError> {
         chars.next();
         *counter += 1;
         let group_number = *counter;
@@ -235,7 +253,7 @@ impl Parser {
                 '(' => {
                     paren_depth += 1;
                     group_content.push(ch);
-                },
+                }
                 ')' => {
                     paren_depth -= 1;
                     if paren_depth == 0 {
@@ -243,7 +261,7 @@ impl Parser {
                     } else {
                         group_content.push(ch);
                     }
-                },
+                }
                 c => group_content.push(c),
             }
         }
@@ -261,7 +279,10 @@ impl Parser {
         }
     }
 
-    fn parse_alternation_with_counter(content: &str, counter: &mut usize) -> Result<Pattern, ParseError> {
+    fn parse_alternation_with_counter(
+        content: &str,
+        counter: &mut usize,
+    ) -> Result<Pattern, ParseError> {
         if let Some(pipe_pos) = content.find('|') {
             let left_part = &content[..pipe_pos];
             let right_part = &content[pipe_pos + 1..];
@@ -282,7 +303,6 @@ impl Parser {
             patterns.push(Pattern::EndAnchor);
         }
     }
-
 }
 
 pub struct Matcher<'a> {
@@ -305,7 +325,7 @@ impl<'a> Matcher<'a> {
             input,
             patterns,
             debug: false,
-            captures: vec![None; max_groups + 1] // +1 because groups are 1-indexed
+            captures: vec![None; max_groups + 1], // +1 because groups are 1-indexed
         }
     }
 
@@ -320,17 +340,21 @@ impl<'a> Matcher<'a> {
     fn max_group_number(pattern: &Pattern) -> usize {
         match pattern {
             Pattern::Group(patterns, group_num) => {
-                let inner_max = patterns.iter().map(Self::max_group_number).max().unwrap_or(0);
+                let inner_max = patterns
+                    .iter()
+                    .map(Self::max_group_number)
+                    .max()
+                    .unwrap_or(0);
                 (*group_num).max(inner_max)
-            },
+            }
             Pattern::Alternation(left, right) => {
                 let left_max = left.iter().map(Self::max_group_number).max().unwrap_or(0);
                 let right_max = right.iter().map(Self::max_group_number).max().unwrap_or(0);
                 left_max.max(right_max)
-            },
+            }
             Pattern::OneOrMore(inner) | Pattern::ZeroOrMore(inner) | Pattern::ZeroOrOne(inner) => {
                 Self::max_group_number(inner)
-            },
+            }
             _ => 0,
         }
     }
@@ -349,8 +373,11 @@ impl<'a> Matcher<'a> {
 
         for start_pos in start_positions {
             if self.debug {
-                println!("\nAttempting match starting at index {} (char '{}')",
-                    start_pos, self.input.get(start_pos).unwrap_or(&' '));
+                println!(
+                    "\nAttempting match starting at index {} (char '{}')",
+                    start_pos,
+                    self.input.get(start_pos).unwrap_or(&' ')
+                );
             }
 
             for capture in &mut self.captures {
@@ -376,247 +403,335 @@ impl<'a> Matcher<'a> {
     }
 
     fn match_from_position(&mut self, start_pos: usize) -> bool {
-        let mut input_idx = start_pos;
-
-        for (pattern_idx, pattern) in self.patterns.iter().enumerate() {
-            let start_idx = input_idx;
-            let remaining_patterns = &self.patterns[pattern_idx + 1..];
-
-            if !self.match_pattern(&mut input_idx, pattern, remaining_patterns) {
-                if self.debug {
-                    println!("  -> Pattern failed to match at index {}", start_idx);
-                }
-                return false;
-            } else if self.debug {
-                println!("  -> Pattern matched! New index is {}", input_idx);
+        if let Some(end_idx) = self.match_sequence(&self.patterns, start_pos, 0) {
+            if self.debug {
+                println!("  -> Match consumed up to index {}", end_idx);
             }
+            true
+        } else {
+            false
         }
-
-        true
     }
 
-    fn match_pattern(&mut self, input_idx: &mut usize, pattern: &Pattern, remaining_patterns: &[Pattern]) -> bool {
+    fn match_sequence(
+        &mut self,
+        patterns: &[Pattern],
+        input_idx: usize,
+        pattern_idx: usize,
+    ) -> Option<usize> {
+        if pattern_idx == patterns.len() {
+            return Some(input_idx);
+        }
+
+        let pattern = &patterns[pattern_idx];
+        self.match_pattern(patterns, input_idx, pattern_idx, pattern)
+    }
+
+    fn match_pattern(
+        &mut self,
+        patterns: &[Pattern],
+        input_idx: usize,
+        pattern_idx: usize,
+        pattern: &Pattern,
+    ) -> Option<usize> {
         match pattern {
-            Pattern::StartAnchor => *input_idx == 0,
-            Pattern::EndAnchor => *input_idx == self.input.len(),
-            Pattern::Digit => self.match_digit(input_idx),
-            Pattern::Word => self.match_word(input_idx),
-            Pattern::Wildcard => self.match_wildcard(input_idx), 
-            Pattern::Lit(c) => self.match_literal(input_idx, *c),
-            Pattern::CharacterClass { set, neg } => self.match_character_class(input_idx, set, *neg),
-            Pattern::OneOrMore(inner) => self.match_one_or_more(input_idx, inner, remaining_patterns),
-            Pattern::ZeroOrMore(inner) => self.match_zero_or_more(input_idx, inner, remaining_patterns),
-            Pattern::ZeroOrOne(inner) => self.match_zero_or_one(input_idx, inner, remaining_patterns),
-            Pattern::Group(patterns, group_num) => self.match_group(input_idx, patterns, *group_num),
-            Pattern::Alternation(left, right) => self.match_alternation(input_idx, left, right),
-            Pattern::Backreference(n) => self.match_backreference(input_idx, *n),
+            Pattern::StartAnchor => {
+                if input_idx == 0 {
+                    self.match_sequence(patterns, input_idx, pattern_idx + 1)
+                } else {
+                    None
+                }
+            }
+            Pattern::EndAnchor => {
+                if input_idx == self.input.len() {
+                    self.match_sequence(patterns, input_idx, pattern_idx + 1)
+                } else {
+                    None
+                }
+            }
+            Pattern::Digit => self
+                .match_digit(input_idx)
+                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
+            Pattern::Word => self
+                .match_word(input_idx)
+                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
+            Pattern::Wildcard => self
+                .match_wildcard(input_idx)
+                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
+            Pattern::Lit(c) => self
+                .match_literal(input_idx, *c)
+                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
+            Pattern::CharacterClass { set, neg } => self
+                .match_character_class(input_idx, set, *neg)
+                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
+            Pattern::OneOrMore(inner) => {
+                self.match_one_or_more(patterns, input_idx, pattern_idx, inner.as_ref())
+            }
+            Pattern::ZeroOrMore(inner) => {
+                self.match_zero_or_more(patterns, input_idx, pattern_idx, inner.as_ref())
+            }
+            Pattern::ZeroOrOne(inner) => {
+                self.match_zero_or_one(patterns, input_idx, pattern_idx, inner.as_ref())
+            }
+            Pattern::Group(group_patterns, group_num) => {
+                self.match_group(patterns, input_idx, pattern_idx, group_patterns, *group_num)
+            }
+            Pattern::Alternation(left, right) => {
+                self.match_alternation(patterns, input_idx, pattern_idx, left, right)
+            }
+            Pattern::Backreference(n) => self
+                .match_backreference(input_idx, *n)
+                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
         }
     }
 
-    fn match_digit(&self, input_idx: &mut usize) -> bool {
-        if *input_idx < self.input.len() && self.input[*input_idx].is_ascii_digit() {
-            *input_idx += 1;
-            true
+    fn match_digit(&self, input_idx: usize) -> Option<usize> {
+        if input_idx < self.input.len() && self.input[input_idx].is_ascii_digit() {
+            Some(input_idx + 1)
         } else {
-            false
+            None
         }
     }
 
-    fn match_word(&self, input_idx: &mut usize) -> bool {
-        if *input_idx < self.input.len() {
-            let ch = self.input[*input_idx];
+    fn match_word(&self, input_idx: usize) -> Option<usize> {
+        if input_idx < self.input.len() {
+            let ch = self.input[input_idx];
             if ch.is_alphanumeric() || ch == '_' {
-                *input_idx += 1;
-                return true;
+                return Some(input_idx + 1);
             }
         }
-        false
+        None
     }
 
-    fn match_wildcard(&self, input_idx: &mut usize) -> bool {
-        if *input_idx < self.input.len() {
-            *input_idx += 1;
-            true
+    fn match_wildcard(&self, input_idx: usize) -> Option<usize> {
+        if input_idx < self.input.len() {
+            Some(input_idx + 1)
         } else {
-            false
+            None
         }
     }
 
-    fn match_literal(&self, input_idx: &mut usize, literal: char) -> bool {
-        if *input_idx < self.input.len() && self.input[*input_idx] == literal {
-            *input_idx += 1;
-            true
+    fn match_literal(&self, input_idx: usize, literal: char) -> Option<usize> {
+        if input_idx < self.input.len() && self.input[input_idx] == literal {
+            Some(input_idx + 1)
         } else {
-            false
+            None
         }
     }
 
-    fn match_character_class(&self, input_idx: &mut usize, set: &HashSet<char>, negated: bool) -> bool {
-        if *input_idx < self.input.len() {
-            let ch = self.input[*input_idx];
+    fn match_character_class(
+        &self,
+        input_idx: usize,
+        set: &HashSet<char>,
+        negated: bool,
+    ) -> Option<usize> {
+        if input_idx < self.input.len() {
+            let ch = self.input[input_idx];
             let in_set = set.contains(&ch);
             if (negated && !in_set) || (!negated && in_set) {
-                *input_idx += 1;
-                return true;
+                return Some(input_idx + 1);
             }
         }
-        false
+        None
     }
 
-    fn match_one_or_more(&mut self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
-        let original_idx = *input_idx;
-        let mut matched_count: usize = 0;
+    fn match_one_or_more(
+        &mut self,
+        patterns: &[Pattern],
+        input_idx: usize,
+        pattern_idx: usize,
+        inner: &Pattern,
+    ) -> Option<usize> {
+        let original_snapshot = self.snapshot_captures();
+        let mut checkpoints: Vec<(usize, Vec<Option<String>>)> = Vec::new();
+        let mut current_idx = input_idx;
 
-        while self.match_pattern(input_idx, inner, &[]) {
-            matched_count += 1;
-        }
-
-        if matched_count == 0 {
-            *input_idx = original_idx;
-            return false;
-        }
-
-        let reserved_count = self.count_equivalent_patterns(inner, remaining_patterns);
-        let usable_count = matched_count.saturating_sub(reserved_count);
-
-        if usable_count == 0 {
-            *input_idx = original_idx;
-            return false;
-        }
-
-        *input_idx = original_idx;
-        for _ in 0..usable_count {
-            self.match_pattern(input_idx, inner, &[]);
-        }
-
-        true
-    }
-
-    fn match_zero_or_more(&mut self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
-        let original_idx = *input_idx;
-        let mut matched_count: usize = 0;
-
-        while self.match_pattern(input_idx, inner, &[]) {
-            matched_count += 1;
-        }
-
-        let reserved_count = self.count_equivalent_patterns(inner, remaining_patterns);
-        let usable_count = matched_count.saturating_sub(reserved_count);
-
-        *input_idx = original_idx;
-        for _ in 0..usable_count {
-            self.match_pattern(input_idx, inner, &[]);
-        }
-
-        true
-    }
-
-    fn match_zero_or_one(&mut self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
-        let original_idx = *input_idx;
-
-        if self.match_pattern(input_idx, inner, &[]) {
-            let reserved_count = self.count_equivalent_patterns(inner, remaining_patterns);
-            if reserved_count > 0 {
-                *input_idx = original_idx;
-            }
-        }
-        
-        true
-    }
-
-    fn match_group(&mut self, input_idx: &mut usize, patterns: &[Pattern], group_num: usize) -> bool {
-        let original_idx = *input_idx;
-
-        for pattern in patterns {
-            if !self.match_pattern(input_idx, pattern, &[]) {
-                *input_idx = original_idx;
-                return false;
+        loop {
+            let pre_iteration_snapshot = self.snapshot_captures();
+            match self.match_sequence(std::slice::from_ref(inner), current_idx, 0) {
+                Some(next_idx) if next_idx > current_idx => {
+                    checkpoints.push((next_idx, self.snapshot_captures()));
+                    current_idx = next_idx;
+                }
+                Some(_) => {
+                    self.restore_captures(pre_iteration_snapshot);
+                    break;
+                }
+                None => {
+                    self.restore_captures(pre_iteration_snapshot);
+                    break;
+                }
             }
         }
 
-        let captured_text: String = self.input[original_idx..*input_idx].iter().collect();
-        if group_num > 0 && group_num < self.captures.len() {
-            self.captures[group_num] = Some(captured_text);
+        if checkpoints.is_empty() {
+            self.restore_captures(original_snapshot);
+            return None;
         }
 
-        true
+        while let Some((candidate_idx, snapshot)) = checkpoints.pop() {
+            self.restore_captures(snapshot);
+            if let Some(result_idx) = self.match_sequence(patterns, candidate_idx, pattern_idx + 1)
+            {
+                return Some(result_idx);
+            }
+        }
+
+        self.restore_captures(original_snapshot);
+        None
     }
 
-    fn match_backreference(&self, input_idx: &mut usize, group_number: usize) -> bool {
+    fn match_zero_or_more(
+        &mut self,
+        patterns: &[Pattern],
+        input_idx: usize,
+        pattern_idx: usize,
+        inner: &Pattern,
+    ) -> Option<usize> {
+        let original_snapshot = self.snapshot_captures();
+        let mut checkpoints: Vec<(usize, Vec<Option<String>>)> =
+            vec![(input_idx, self.snapshot_captures())];
+        let mut current_idx = input_idx;
+
+        loop {
+            let pre_iteration_snapshot = self.snapshot_captures();
+            match self.match_sequence(std::slice::from_ref(inner), current_idx, 0) {
+                Some(next_idx) if next_idx > current_idx => {
+                    checkpoints.push((next_idx, self.snapshot_captures()));
+                    current_idx = next_idx;
+                }
+                Some(_) => {
+                    self.restore_captures(pre_iteration_snapshot);
+                    break;
+                }
+                None => {
+                    self.restore_captures(pre_iteration_snapshot);
+                    break;
+                }
+            }
+        }
+
+        while let Some((candidate_idx, snapshot)) = checkpoints.pop() {
+            self.restore_captures(snapshot);
+            if let Some(result_idx) = self.match_sequence(patterns, candidate_idx, pattern_idx + 1)
+            {
+                return Some(result_idx);
+            }
+        }
+
+        self.restore_captures(original_snapshot);
+        None
+    }
+
+    fn match_zero_or_one(
+        &mut self,
+        patterns: &[Pattern],
+        input_idx: usize,
+        pattern_idx: usize,
+        inner: &Pattern,
+    ) -> Option<usize> {
+        let original_snapshot = self.snapshot_captures();
+
+        if let Some(next_idx) = self.match_sequence(std::slice::from_ref(inner), input_idx, 0) {
+            if let Some(result_idx) = self.match_sequence(patterns, next_idx, pattern_idx + 1) {
+                return Some(result_idx);
+            }
+        }
+
+        self.restore_captures(original_snapshot.clone());
+        if let Some(result_idx) = self.match_sequence(patterns, input_idx, pattern_idx + 1) {
+            return Some(result_idx);
+        }
+
+        self.restore_captures(original_snapshot);
+        None
+    }
+
+    fn match_group(
+        &mut self,
+        patterns: &[Pattern],
+        input_idx: usize,
+        pattern_idx: usize,
+        group_patterns: &[Pattern],
+        group_num: usize,
+    ) -> Option<usize> {
+        let original_snapshot = self.snapshot_captures();
+        let original_idx = input_idx;
+
+        if let Some(end_idx) = self.match_sequence(group_patterns, input_idx, 0) {
+            let captured_text: String = self.input[original_idx..end_idx].iter().collect();
+            if group_num > 0 && group_num < self.captures.len() {
+                self.captures[group_num] = Some(captured_text);
+            }
+
+            if let Some(result_idx) = self.match_sequence(patterns, end_idx, pattern_idx + 1) {
+                return Some(result_idx);
+            }
+        }
+
+        self.restore_captures(original_snapshot);
+        None
+    }
+
+    fn match_alternation(
+        &mut self,
+        patterns: &[Pattern],
+        input_idx: usize,
+        pattern_idx: usize,
+        left: &[Pattern],
+        right: &[Pattern],
+    ) -> Option<usize> {
+        let original_snapshot = self.snapshot_captures();
+
+        self.restore_captures(original_snapshot.clone());
+        if let Some(next_idx) = self.match_sequence(left, input_idx, 0) {
+            if let Some(result_idx) = self.match_sequence(patterns, next_idx, pattern_idx + 1) {
+                return Some(result_idx);
+            }
+        }
+
+        self.restore_captures(original_snapshot.clone());
+        if let Some(next_idx) = self.match_sequence(right, input_idx, 0) {
+            if let Some(result_idx) = self.match_sequence(patterns, next_idx, pattern_idx + 1) {
+                return Some(result_idx);
+            }
+        }
+
+        self.restore_captures(original_snapshot);
+        None
+    }
+
+    fn match_backreference(&self, input_idx: usize, group_number: usize) -> Option<usize> {
         if group_number == 0 || group_number >= self.captures.len() {
-            return false;
+            return None;
         }
 
         let captured_text = match &self.captures[group_number] {
             Some(text) => text,
-            None => return false, // Group hasn't been captured yet
+            None => return None,
         };
 
         let captured_chars: Vec<char> = captured_text.chars().collect();
 
-        if *input_idx + captured_chars.len() > self.input.len() {
-            return false;
+        if input_idx + captured_chars.len() > self.input.len() {
+            return None;
         }
 
         for (i, &ch) in captured_chars.iter().enumerate() {
-            if self.input[*input_idx + i] != ch {
-                return false;
+            if self.input[input_idx + i] != ch {
+                return None;
             }
         }
 
-        *input_idx += captured_chars.len();
-        true
+        Some(input_idx + captured_chars.len())
     }
 
-    fn match_alternation(&mut self, input_idx: &mut usize, left: &[Pattern], right: &[Pattern]) -> bool {
-        let original_idx = *input_idx;
-
-        let mut temp_idx = *input_idx;
-        let mut left_matches = true;
-        for pattern in left {
-            if !self.match_pattern(&mut temp_idx, pattern, &[]) {
-                left_matches = false;
-                break;
-            }
-        }
-
-        if left_matches {
-            *input_idx = temp_idx;
-            return true;
-        }
-
-        *input_idx = original_idx;
-        let mut temp_idx = *input_idx;
-        let mut right_matches = true;
-        for pattern in right {
-            if !self.match_pattern(&mut temp_idx, pattern, &[]) {
-                right_matches = false;
-                break;
-            }
-        }
-
-        if right_matches {
-            *input_idx = temp_idx;
-            return true;
-        }
-
-        *input_idx = original_idx;
-        false
+    fn snapshot_captures(&self) -> Vec<Option<String>> {
+        self.captures.clone()
     }
 
-    fn count_equivalent_patterns(&self, target: &Pattern, patterns: &[Pattern]) -> usize {
-        let mut count = 0;
-        for pattern in patterns {
-            match (target, pattern) {
-                _ if target.is_equivalent(pattern) => count += 1,
-                (Pattern::Wildcard, Pattern::Lit(_)) |
-                (Pattern::Wildcard, Pattern::Digit) |
-                (Pattern::Wildcard, Pattern::Word) |
-                (Pattern::Wildcard, Pattern::CharacterClass { .. }) => count += 1,
-                _ => break,
-            }
-        }
-        count
+    fn restore_captures(&mut self, snapshot: Vec<Option<String>>) {
+        self.captures = snapshot;
     }
 }
 
@@ -628,7 +743,10 @@ pub struct RegexEngine {
 impl RegexEngine {
     pub fn new(pattern_str: &str) -> Result<Self, ParseError> {
         let patterns = Parser::parse(pattern_str)?;
-        Ok(Self { patterns, debug: false })
+        Ok(Self {
+            patterns,
+            debug: false,
+        })
     }
 
     pub fn with_debug(mut self, debug: bool) -> Self {
@@ -643,8 +761,7 @@ impl RegexEngine {
             println!("Pattern: {:?}", self.patterns);
         }
 
-        let mut matcher = Matcher::new(&chars, &self.patterns)
-            .with_debug(self.debug);
+        let mut matcher = Matcher::new(&chars, &self.patterns).with_debug(self.debug);
         matcher.find_match()
     }
 
