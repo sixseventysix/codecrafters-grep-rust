@@ -16,7 +16,7 @@ pub enum Pattern {
     OneOrMore(Box<Pattern>),
     ZeroOrMore(Box<Pattern>),
     ZeroOrOne(Box<Pattern>),
-    Group(Vec<Pattern>),
+    Group(Vec<Pattern>, usize),
     Alternation(Vec<Pattern>, Vec<Pattern>),
     Backreference(usize),
 }
@@ -42,8 +42,8 @@ impl Pattern {
             (Pattern::ZeroOrOne(inner1), Pattern::ZeroOrOne(inner2)) => {
                 inner1.is_equivalent(inner2)
             },
-            (Pattern::Group(patterns1), Pattern::Group(patterns2)) => {
-                patterns1.len() == patterns2.len() &&
+            (Pattern::Group(patterns1, num1), Pattern::Group(patterns2, num2)) => {
+                num1 == num2 && patterns1.len() == patterns2.len() &&
                 patterns1.iter().zip(patterns2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
             },
             (Pattern::Alternation(left1, right1), Pattern::Alternation(left2, right2)) => {
@@ -80,8 +80,15 @@ impl std::fmt::Display for ParseError {
 
 impl Parser {
     pub fn parse(pattern: &str) -> Result<Vec<Pattern>, ParseError> {
+        let mut counter = 0;
+        let mut patterns = Self::parse_with_counter(pattern, &mut counter)?;
+        Self::cleanup_end_anchor(&mut patterns);
+        Ok(patterns)
+    }
+
+    fn parse_with_counter(pattern: &str, counter: &mut usize) -> Result<Vec<Pattern>, ParseError> {
         if pattern.contains('|') && !Self::is_inside_group(pattern) {
-            return Self::parse_top_level_alternation(pattern);
+            return Self::parse_top_level_alternation_with_counter(pattern, counter);
         }
 
         let mut chars = pattern.chars().peekable();
@@ -98,7 +105,7 @@ impl Parser {
                 '[' => Self::parse_character_class(&mut chars)?,
                 '$' => Self::parse_dollar(&mut chars),
                 '.' => Self::parse_wildcard(&mut chars),
-                '(' => Self::parse_group(&mut chars)?,
+                '(' => Self::parse_group_with_counter(&mut chars, counter)?,
                 _ => Self::parse_literal(&mut chars),
             };
 
@@ -124,8 +131,6 @@ impl Parser {
             }
         }
 
-        Self::cleanup_end_anchor(&mut patterns);
-
         Ok(patterns)
     }
 
@@ -142,17 +147,17 @@ impl Parser {
         true
     }
 
-    fn parse_top_level_alternation(pattern: &str) -> Result<Vec<Pattern>, ParseError> {
+    fn parse_top_level_alternation_with_counter(pattern: &str, counter: &mut usize) -> Result<Vec<Pattern>, ParseError> {
         if let Some(pipe_pos) = pattern.find('|') {
             let left_part = &pattern[..pipe_pos];
             let right_part = &pattern[pipe_pos + 1..];
 
-            let left_patterns = Self::parse(left_part)?;
-            let right_patterns = Self::parse(right_part)?;
+            let left_patterns = Self::parse_with_counter(left_part, counter)?;
+            let right_patterns = Self::parse_with_counter(right_part, counter)?;
 
             Ok(vec![Pattern::Alternation(left_patterns, right_patterns)])
         } else {
-            Self::parse(pattern)
+            Self::parse_with_counter(pattern, counter)
         }
     }
 
@@ -217,8 +222,10 @@ impl Parser {
         Pattern::Lit(ch)
     }
 
-    fn parse_group(chars: &mut Peekable<std::str::Chars>) -> Result<Pattern, ParseError> {
+    fn parse_group_with_counter(chars: &mut Peekable<std::str::Chars>, counter: &mut usize) -> Result<Pattern, ParseError> {
         chars.next();
+        *counter += 1;
+        let group_number = *counter;
 
         let mut group_content = String::new();
         let mut paren_depth = 1;
@@ -246,26 +253,26 @@ impl Parser {
         }
 
         if group_content.contains('|') {
-            let alternation = Self::parse_alternation(&group_content)?;
-            Ok(Pattern::Group(vec![alternation]))
+            let alternation = Self::parse_alternation_with_counter(&group_content, counter)?;
+            Ok(Pattern::Group(vec![alternation], group_number))
         } else {
-            let patterns = Self::parse(&group_content)?;
-            Ok(Pattern::Group(patterns))
+            let patterns = Self::parse_with_counter(&group_content, counter)?;
+            Ok(Pattern::Group(patterns, group_number))
         }
     }
 
-    fn parse_alternation(content: &str) -> Result<Pattern, ParseError> {
+    fn parse_alternation_with_counter(content: &str, counter: &mut usize) -> Result<Pattern, ParseError> {
         if let Some(pipe_pos) = content.find('|') {
             let left_part = &content[..pipe_pos];
             let right_part = &content[pipe_pos + 1..];
 
-            let left_patterns = Self::parse(left_part)?;
-            let right_patterns = Self::parse(right_part)?;
+            let left_patterns = Self::parse_with_counter(left_part, counter)?;
+            let right_patterns = Self::parse_with_counter(right_part, counter)?;
 
             Ok(Pattern::Alternation(left_patterns, right_patterns))
         } else {
-            let patterns = Self::parse(content)?;
-            Ok(Pattern::Group(patterns))
+            let patterns = Self::parse_with_counter(content, counter)?;
+            Ok(Pattern::Group(patterns, 0)) // This shouldn't happen in practice
         }
     }
 
@@ -282,7 +289,7 @@ pub struct Matcher<'a> {
     input: &'a [char],
     patterns: &'a [Pattern],
     debug: bool,
-    captures: Vec<String>,
+    captures: Vec<Option<String>>,
 }
 
 #[derive(Debug)]
@@ -293,7 +300,39 @@ pub struct MatchContext {
 
 impl<'a> Matcher<'a> {
     pub fn new(input: &'a [char], patterns: &'a [Pattern]) -> Self {
-        Self { input, patterns, debug: false, captures: Vec::new() }
+        let max_groups = Self::count_groups(patterns);
+        Self {
+            input,
+            patterns,
+            debug: false,
+            captures: vec![None; max_groups + 1] // +1 because groups are 1-indexed
+        }
+    }
+
+    fn count_groups(patterns: &[Pattern]) -> usize {
+        let mut max_group = 0;
+        for pattern in patterns {
+            max_group = max_group.max(Self::max_group_number(pattern));
+        }
+        max_group
+    }
+
+    fn max_group_number(pattern: &Pattern) -> usize {
+        match pattern {
+            Pattern::Group(patterns, group_num) => {
+                let inner_max = patterns.iter().map(Self::max_group_number).max().unwrap_or(0);
+                (*group_num).max(inner_max)
+            },
+            Pattern::Alternation(left, right) => {
+                let left_max = left.iter().map(Self::max_group_number).max().unwrap_or(0);
+                let right_max = right.iter().map(Self::max_group_number).max().unwrap_or(0);
+                left_max.max(right_max)
+            },
+            Pattern::OneOrMore(inner) | Pattern::ZeroOrMore(inner) | Pattern::ZeroOrOne(inner) => {
+                Self::max_group_number(inner)
+            },
+            _ => 0,
+        }
     }
 
     pub fn with_debug(mut self, debug: bool) -> Self {
@@ -314,7 +353,9 @@ impl<'a> Matcher<'a> {
                     start_pos, self.input.get(start_pos).unwrap_or(&' '));
             }
 
-            self.captures.clear();
+            for capture in &mut self.captures {
+                *capture = None;
+            }
             if self.match_from_position(start_pos) {
                 if self.debug {
                     println!("\n--- Full match found! ---");
@@ -366,7 +407,7 @@ impl<'a> Matcher<'a> {
             Pattern::OneOrMore(inner) => self.match_one_or_more(input_idx, inner, remaining_patterns),
             Pattern::ZeroOrMore(inner) => self.match_zero_or_more(input_idx, inner, remaining_patterns),
             Pattern::ZeroOrOne(inner) => self.match_zero_or_one(input_idx, inner, remaining_patterns),
-            Pattern::Group(patterns) => self.match_group(input_idx, patterns),
+            Pattern::Group(patterns, group_num) => self.match_group(input_idx, patterns, *group_num),
             Pattern::Alternation(left, right) => self.match_alternation(input_idx, left, right),
             Pattern::Backreference(n) => self.match_backreference(input_idx, *n),
         }
@@ -483,7 +524,7 @@ impl<'a> Matcher<'a> {
         true
     }
 
-    fn match_group(&mut self, input_idx: &mut usize, patterns: &[Pattern]) -> bool {
+    fn match_group(&mut self, input_idx: &mut usize, patterns: &[Pattern], group_num: usize) -> bool {
         let original_idx = *input_idx;
 
         for pattern in patterns {
@@ -494,17 +535,23 @@ impl<'a> Matcher<'a> {
         }
 
         let captured_text: String = self.input[original_idx..*input_idx].iter().collect();
-        self.captures.push(captured_text);
+        if group_num > 0 && group_num < self.captures.len() {
+            self.captures[group_num] = Some(captured_text);
+        }
 
         true
     }
 
     fn match_backreference(&self, input_idx: &mut usize, group_number: usize) -> bool {
-        if group_number == 0 || group_number > self.captures.len() {
+        if group_number == 0 || group_number >= self.captures.len() {
             return false;
         }
 
-        let captured_text = &self.captures[group_number - 1];
+        let captured_text = match &self.captures[group_number] {
+            Some(text) => text,
+            None => return false, // Group hasn't been captured yet
+        };
+
         let captured_chars: Vec<char> = captured_text.chars().collect();
 
         if *input_idx + captured_chars.len() > self.input.len() {
