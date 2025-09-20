@@ -18,6 +18,7 @@ pub enum Pattern {
     ZeroOrOne(Box<Pattern>),
     Group(Vec<Pattern>),
     Alternation(Vec<Pattern>, Vec<Pattern>),
+    Backreference(usize),
 }
 
 impl Pattern {
@@ -50,6 +51,7 @@ impl Pattern {
                 left1.iter().zip(left2.iter()).all(|(p1, p2)| p1.is_equivalent(p2)) &&
                 right1.iter().zip(right2.iter()).all(|(p1, p2)| p1.is_equivalent(p2))
             },
+            (Pattern::Backreference(n1), Pattern::Backreference(n2)) => n1 == n2,
             _ => false,
         }
     }
@@ -159,6 +161,10 @@ impl Parser {
         match chars.next() {
             Some('d') => Ok(Pattern::Digit),
             Some('w') => Ok(Pattern::Word),
+            Some(c) if c.is_ascii_digit() => {
+                let digit = c.to_digit(10).unwrap() as usize;
+                Ok(Pattern::Backreference(digit))
+            },
             Some(c) => Ok(Pattern::Lit(c)),
             None => Err(ParseError::DanglingBackslash),
         }
@@ -268,12 +274,14 @@ impl Parser {
             patterns.push(Pattern::EndAnchor);
         }
     }
+
 }
 
 pub struct Matcher<'a> {
     input: &'a [char],
     patterns: &'a [Pattern],
     debug: bool,
+    captures: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -284,7 +292,7 @@ pub struct MatchContext {
 
 impl<'a> Matcher<'a> {
     pub fn new(input: &'a [char], patterns: &'a [Pattern]) -> Self {
-        Self { input, patterns, debug: false }
+        Self { input, patterns, debug: false, captures: Vec::new() }
     }
 
     pub fn with_debug(mut self, debug: bool) -> Self {
@@ -292,19 +300,20 @@ impl<'a> Matcher<'a> {
         self
     }
 
-    pub fn find_match(&self) -> bool {
+    pub fn find_match(&mut self) -> bool {
         if self.patterns.is_empty() {
             return false;
         }
 
         let start_positions = self.get_start_positions();
-        
+
         for start_pos in start_positions {
             if self.debug {
-                println!("\nAttempting match starting at index {} (char '{}')", 
+                println!("\nAttempting match starting at index {} (char '{}')",
                     start_pos, self.input.get(start_pos).unwrap_or(&' '));
             }
-            
+
+            self.captures.clear();
             if self.match_from_position(start_pos) {
                 if self.debug {
                     println!("\n--- Full match found! ---");
@@ -312,7 +321,7 @@ impl<'a> Matcher<'a> {
                 return true;
             }
         }
-        
+
         false
     }
 
@@ -324,13 +333,13 @@ impl<'a> Matcher<'a> {
         }
     }
 
-    fn match_from_position(&self, start_pos: usize) -> bool {
+    fn match_from_position(&mut self, start_pos: usize) -> bool {
         let mut input_idx = start_pos;
-        
+
         for (pattern_idx, pattern) in self.patterns.iter().enumerate() {
             let start_idx = input_idx;
             let remaining_patterns = &self.patterns[pattern_idx + 1..];
-            
+
             if !self.match_pattern(&mut input_idx, pattern, remaining_patterns) {
                 if self.debug {
                     println!("  -> Pattern failed to match at index {}", start_idx);
@@ -340,11 +349,11 @@ impl<'a> Matcher<'a> {
                 println!("  -> Pattern matched! New index is {}", input_idx);
             }
         }
-        
+
         true
     }
 
-    fn match_pattern(&self, input_idx: &mut usize, pattern: &Pattern, remaining_patterns: &[Pattern]) -> bool {
+    fn match_pattern(&mut self, input_idx: &mut usize, pattern: &Pattern, remaining_patterns: &[Pattern]) -> bool {
         match pattern {
             Pattern::StartAnchor => *input_idx == 0,
             Pattern::EndAnchor => *input_idx == self.input.len(),
@@ -358,6 +367,7 @@ impl<'a> Matcher<'a> {
             Pattern::ZeroOrOne(inner) => self.match_zero_or_one(input_idx, inner, remaining_patterns),
             Pattern::Group(patterns) => self.match_group(input_idx, patterns),
             Pattern::Alternation(left, right) => self.match_alternation(input_idx, left, right),
+            Pattern::Backreference(n) => self.match_backreference(input_idx, *n),
         }
     }
 
@@ -411,7 +421,7 @@ impl<'a> Matcher<'a> {
         false
     }
 
-    fn match_one_or_more(&self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
+    fn match_one_or_more(&mut self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
         let original_idx = *input_idx;
         let mut matched_count: usize = 0;
 
@@ -440,7 +450,7 @@ impl<'a> Matcher<'a> {
         true
     }
 
-    fn match_zero_or_more(&self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
+    fn match_zero_or_more(&mut self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
         let original_idx = *input_idx;
         let mut matched_count: usize = 0;
 
@@ -459,7 +469,7 @@ impl<'a> Matcher<'a> {
         true
     }
 
-    fn match_zero_or_one(&self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
+    fn match_zero_or_one(&mut self, input_idx: &mut usize, inner: &Pattern, remaining_patterns: &[Pattern]) -> bool {
         let original_idx = *input_idx;
 
         if self.match_pattern(input_idx, inner, &[]) {
@@ -472,7 +482,7 @@ impl<'a> Matcher<'a> {
         true
     }
 
-    fn match_group(&self, input_idx: &mut usize, patterns: &[Pattern]) -> bool {
+    fn match_group(&mut self, input_idx: &mut usize, patterns: &[Pattern]) -> bool {
         let original_idx = *input_idx;
 
         for pattern in patterns {
@@ -482,13 +492,37 @@ impl<'a> Matcher<'a> {
             }
         }
 
+        let captured_text: String = self.input[original_idx..*input_idx].iter().collect();
+        self.captures.push(captured_text);
+
         true
     }
 
-    fn match_alternation(&self, input_idx: &mut usize, left: &[Pattern], right: &[Pattern]) -> bool {
+    fn match_backreference(&self, input_idx: &mut usize, group_number: usize) -> bool {
+        if group_number == 0 || group_number > self.captures.len() {
+            return false;
+        }
+
+        let captured_text = &self.captures[group_number - 1];
+        let captured_chars: Vec<char> = captured_text.chars().collect();
+
+        if *input_idx + captured_chars.len() > self.input.len() {
+            return false;
+        }
+
+        for (i, &ch) in captured_chars.iter().enumerate() {
+            if self.input[*input_idx + i] != ch {
+                return false;
+            }
+        }
+
+        *input_idx += captured_chars.len();
+        true
+    }
+
+    fn match_alternation(&mut self, input_idx: &mut usize, left: &[Pattern], right: &[Pattern]) -> bool {
         let original_idx = *input_idx;
 
-        // Try left alternative
         let mut temp_idx = *input_idx;
         let mut left_matches = true;
         for pattern in left {
@@ -503,7 +537,6 @@ impl<'a> Matcher<'a> {
             return true;
         }
 
-        // Try right alternative
         *input_idx = original_idx;
         let mut temp_idx = *input_idx;
         let mut right_matches = true;
@@ -557,14 +590,14 @@ impl RegexEngine {
 
     pub fn is_match(&self, input: &str) -> bool {
         let chars: Vec<char> = input.chars().collect();
-        
+
         if self.debug {
             println!("Pattern: {:?}", self.patterns);
         }
-        
-        Matcher::new(&chars, &self.patterns)
-            .with_debug(self.debug)
-            .find_match()
+
+        let mut matcher = Matcher::new(&chars, &self.patterns)
+            .with_debug(self.debug);
+        matcher.find_match()
     }
 
     pub fn patterns(&self) -> &[Pattern] {
