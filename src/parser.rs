@@ -30,7 +30,7 @@ impl ParseContext {
 
 pub fn parse_regex(input: &str) -> Result<Regex> {
     let context = ParseContext::new();
-    match regex_with_context(input, &context) {
+    match regex(input, &context) {
         Ok(("", result)) => {
             Ok(result)
         },
@@ -43,21 +43,21 @@ pub fn parse_regex(input: &str) -> Result<Regex> {
     }
 }
 
-fn regex_with_context<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
-    alternation_with_context(input, context)
+fn regex<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
+    alternation(input, context)
 }
 
-fn alternation_with_context<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
-    let (input, first) = sequence_with_context(input, context)?;
-    let (input, rest) = many0(preceded(char('|'), |i| sequence_with_context(i, context)))(input)?;
+fn alternation<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
+    let (input, first) = sequence(input, context)?;
+    let (input, rest) = many0(preceded(char('|'), |i| sequence(i, context)))(input)?;
 
     Ok((input, rest.into_iter().fold(first, |acc, r| {
         Regex::Alternation(Box::new(acc), Box::new(r))
     })))
 }
 
-fn sequence_with_context<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
-    let (input, parts) = many0(|i| quantified_with_context(i, context))(input)?;
+fn sequence<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
+    let (input, parts) = many0(|i| quantified(i, context))(input)?;
 
     let result = if parts.is_empty() {
         Regex::Empty
@@ -70,8 +70,8 @@ fn sequence_with_context<'a>(input: &'a str, context: &ParseContext) -> IResult<
     Ok((input, result))
 }
 
-fn quantified_with_context<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
-    let (input, base) = atom_with_context(input, context)?;
+fn quantified<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
+    let (input, base) = atom(input, context)?;
     let (input, quantifier) = opt(alt((char('*'), char('+'), char('?'))))(input)?;
 
     let result = match quantifier {
@@ -84,13 +84,13 @@ fn quantified_with_context<'a>(input: &'a str, context: &ParseContext) -> IResul
     Ok((input, result))
 }
 
-fn atom_with_context<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
+fn atom<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
     alt((
         anchor,
         dot,
         char_class,
         escaped_char,
-        |i| grouped_with_context(i, context),
+        |i| grouped(i, context),
         literal_char,
     ))(input)
 }
@@ -139,10 +139,10 @@ fn escaped_char(input: &str) -> IResult<&str, Regex> {
     Ok((input, result))
 }
 
-fn grouped_with_context<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
+fn grouped<'a>(input: &'a str, context: &ParseContext) -> IResult<&'a str, Regex> {
     let (input, _) = char('(')(input)?;
     let group_num = context.next_group_number();
-    let (input, inner) = regex_with_context(input, context)?;
+    let (input, inner) = regex(input, context)?;
     let (input, _) = char(')')(input)?;
     Ok((input, Regex::Group(Box::new(inner), group_num)))
 }
