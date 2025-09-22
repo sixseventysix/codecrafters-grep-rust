@@ -403,7 +403,7 @@ impl<'a> Matcher<'a> {
     }
 
     fn match_from_position(&mut self, start_pos: usize) -> bool {
-        if let Some(end_idx) = self.match_sequence(&self.patterns, start_pos, 0) {
+        if let Some(end_idx) = self.match_sequence(&self.patterns, start_pos) {
             if self.debug {
                 println!("  -> Match consumed up to index {}", end_idx);
             }
@@ -413,75 +413,141 @@ impl<'a> Matcher<'a> {
         }
     }
 
-    fn match_sequence(
-        &mut self,
-        patterns: &[Pattern],
-        input_idx: usize,
-        pattern_idx: usize,
-    ) -> Option<usize> {
-        if pattern_idx == patterns.len() {
+    fn match_single_pattern(&mut self, pattern: &Pattern, input_idx: usize) -> Option<usize> {
+        match pattern {
+            Pattern::Digit => self.match_digit(input_idx),
+            Pattern::Word => self.match_word(input_idx),
+            Pattern::Wildcard => self.match_wildcard(input_idx),
+            Pattern::Lit(c) => self.match_literal(input_idx, *c),
+            Pattern::CharacterClass { set, neg } => self.match_character_class(input_idx, set, *neg),
+            Pattern::Backreference(n) => self.match_backreference(input_idx, *n),
+            Pattern::StartAnchor => if input_idx == 0 { Some(input_idx) } else { None },
+            Pattern::EndAnchor => if input_idx == self.input.len() { Some(input_idx) } else { None },
+            _ => None,
+        }
+    }
+
+    fn match_sequence(&mut self, patterns: &[Pattern], mut input_idx: usize) -> Option<usize> {
+        if patterns.is_empty() {
             return Some(input_idx);
         }
 
-        let pattern = &patterns[pattern_idx];
-        self.match_pattern(patterns, input_idx, pattern_idx, pattern)
-    }
+        let pattern = &patterns[0];
+        let remaining_patterns = &patterns[1..];
 
-    fn match_pattern(
-        &mut self,
-        patterns: &[Pattern],
-        input_idx: usize,
-        pattern_idx: usize,
-        pattern: &Pattern,
-    ) -> Option<usize> {
         match pattern {
-            Pattern::StartAnchor => {
-                if input_idx == 0 {
-                    self.match_sequence(patterns, input_idx, pattern_idx + 1)
-                } else {
-                    None
-                }
-            }
-            Pattern::EndAnchor => {
-                if input_idx == self.input.len() {
-                    self.match_sequence(patterns, input_idx, pattern_idx + 1)
-                } else {
-                    None
-                }
-            }
-            Pattern::Digit => self
-                .match_digit(input_idx)
-                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
-            Pattern::Word => self
-                .match_word(input_idx)
-                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
-            Pattern::Wildcard => self
-                .match_wildcard(input_idx)
-                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
-            Pattern::Lit(c) => self
-                .match_literal(input_idx, *c)
-                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
-            Pattern::CharacterClass { set, neg } => self
-                .match_character_class(input_idx, set, *neg)
-                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
             Pattern::OneOrMore(inner) => {
-                self.match_one_or_more(patterns, input_idx, pattern_idx, inner.as_ref())
+                let mut checkpoints = Vec::new();
+                let mut current_idx = input_idx;
+
+                loop {
+                    let pre_iteration_snapshot = self.snapshot_captures();
+                    match self.match_sequence(std::slice::from_ref(inner), current_idx) {
+                        Some(next_idx) if next_idx > current_idx => {
+                            checkpoints.push((next_idx, self.snapshot_captures()));
+                            current_idx = next_idx;
+                        }
+                        _ => {
+                            self.restore_captures(pre_iteration_snapshot);
+                            break;
+                        }
+                    }
+                }
+
+                while let Some((candidate_idx, snapshot)) = checkpoints.pop() {
+                    self.restore_captures(snapshot);
+                    if let Some(result_idx) = self.match_sequence(remaining_patterns, candidate_idx) {
+                        return Some(result_idx);
+                    }
+                }
+                None
             }
+
             Pattern::ZeroOrMore(inner) => {
-                self.match_zero_or_more(patterns, input_idx, pattern_idx, inner.as_ref())
+                let mut checkpoints = vec![(input_idx, self.snapshot_captures())];
+                let mut current_idx = input_idx;
+
+                loop {
+                    let pre_iteration_snapshot = self.snapshot_captures();
+                    match self.match_sequence(std::slice::from_ref(inner), current_idx) {
+                        Some(next_idx) if next_idx > current_idx => {
+                            checkpoints.push((next_idx, self.snapshot_captures()));
+                            current_idx = next_idx;
+                        }
+                        _ => {
+                            self.restore_captures(pre_iteration_snapshot);
+                            break;
+                        }
+                    }
+                }
+
+                // Backtrack from longest to shortest
+                while let Some((candidate_idx, snapshot)) = checkpoints.pop() {
+                    self.restore_captures(snapshot);
+                    if let Some(result_idx) = self.match_sequence(remaining_patterns, candidate_idx) {
+                        return Some(result_idx);
+                    }
+                }
+                None
             }
+
             Pattern::ZeroOrOne(inner) => {
-                self.match_zero_or_one(patterns, input_idx, pattern_idx, inner.as_ref())
+                let original_snapshot = self.snapshot_captures();
+
+                if let Some(next_idx) = self.match_sequence(std::slice::from_ref(inner), input_idx) {
+                    if let Some(result_idx) = self.match_sequence(remaining_patterns, next_idx) {
+                        return Some(result_idx);
+                    }
+                }
+                
+                self.restore_captures(original_snapshot);
+                self.match_sequence(remaining_patterns, input_idx)
             }
+
             Pattern::Group(group_patterns, group_num) => {
-                self.match_group(patterns, input_idx, pattern_idx, group_patterns, *group_num)
+                let original_snapshot = self.snapshot_captures();
+                if let Some(end_idx) = self.match_sequence(group_patterns, input_idx) {
+                    let captured_text: String = self.input[input_idx..end_idx].iter().collect();
+                    if *group_num > 0 && *group_num < self.captures.len() {
+                        self.captures[*group_num] = Some(captured_text);
+                    }
+
+                    if let Some(result_idx) = self.match_sequence(remaining_patterns, end_idx) {
+                        return Some(result_idx);
+                    }
+                }
+
+                self.restore_captures(original_snapshot);
+                None
             }
+
             Pattern::Alternation(left, right) => {
-                self.match_alternation(patterns, input_idx, pattern_idx, left, right)
+                let original_snapshot = self.snapshot_captures();
+
+                if let Some(next_idx) = self.match_sequence(left, input_idx) {
+                    if let Some(result_idx) = self.match_sequence(remaining_patterns, next_idx) {
+                        return Some(result_idx);
+                    }
+                }
+                
+                self.restore_captures(original_snapshot);
+
+                if let Some(next_idx) = self.match_sequence(right, input_idx) {
+                    if let Some(result_idx) = self.match_sequence(remaining_patterns, next_idx) {
+                        return Some(result_idx);
+                    }
+                }
+
+                None
             }
-            Pattern::Backreference(n) => self
-                .match_backreference(input_idx, *n)
-                .and_then(|next_idx| self.match_sequence(patterns, next_idx, pattern_idx + 1)),
+
+            _ => {
+                if let Some(next_idx) = self.match_single_pattern(pattern, input_idx) {
+                    self.match_sequence(remaining_patterns, next_idx)
+                } else {
+                    None
+                }
+            }
         }
     }
 
@@ -548,7 +614,7 @@ impl<'a> Matcher<'a> {
 
         loop {
             let pre_iteration_snapshot = self.snapshot_captures();
-            match self.match_sequence(std::slice::from_ref(inner), current_idx, 0) {
+            match self.match_sequence(std::slice::from_ref(inner), current_idx) {
                 Some(next_idx) if next_idx > current_idx => {
                     checkpoints.push((next_idx, self.snapshot_captures()));
                     current_idx = next_idx;
@@ -571,7 +637,7 @@ impl<'a> Matcher<'a> {
 
         while let Some((candidate_idx, snapshot)) = checkpoints.pop() {
             self.restore_captures(snapshot);
-            if let Some(result_idx) = self.match_sequence(patterns, candidate_idx, pattern_idx + 1)
+            if let Some(result_idx) = self.match_sequence(patterns, candidate_idx)
             {
                 return Some(result_idx);
             }
@@ -595,7 +661,7 @@ impl<'a> Matcher<'a> {
 
         loop {
             let pre_iteration_snapshot = self.snapshot_captures();
-            match self.match_sequence(std::slice::from_ref(inner), current_idx, 0) {
+            match self.match_sequence(std::slice::from_ref(inner), current_idx) {
                 Some(next_idx) if next_idx > current_idx => {
                     checkpoints.push((next_idx, self.snapshot_captures()));
                     current_idx = next_idx;
@@ -613,7 +679,7 @@ impl<'a> Matcher<'a> {
 
         while let Some((candidate_idx, snapshot)) = checkpoints.pop() {
             self.restore_captures(snapshot);
-            if let Some(result_idx) = self.match_sequence(patterns, candidate_idx, pattern_idx + 1)
+            if let Some(result_idx) = self.match_sequence(patterns, candidate_idx)
             {
                 return Some(result_idx);
             }
@@ -632,14 +698,14 @@ impl<'a> Matcher<'a> {
     ) -> Option<usize> {
         let original_snapshot = self.snapshot_captures();
 
-        if let Some(next_idx) = self.match_sequence(std::slice::from_ref(inner), input_idx, 0) {
-            if let Some(result_idx) = self.match_sequence(patterns, next_idx, pattern_idx + 1) {
+        if let Some(next_idx) = self.match_sequence(std::slice::from_ref(inner), input_idx) {
+            if let Some(result_idx) = self.match_sequence(patterns, next_idx) {
                 return Some(result_idx);
             }
         }
 
         self.restore_captures(original_snapshot.clone());
-        if let Some(result_idx) = self.match_sequence(patterns, input_idx, pattern_idx + 1) {
+        if let Some(result_idx) = self.match_sequence(patterns, input_idx) {
             return Some(result_idx);
         }
 
@@ -658,13 +724,13 @@ impl<'a> Matcher<'a> {
         let original_snapshot = self.snapshot_captures();
         let original_idx = input_idx;
 
-        if let Some(end_idx) = self.match_sequence(group_patterns, input_idx, 0) {
+        if let Some(end_idx) = self.match_sequence(group_patterns, input_idx) {
             let captured_text: String = self.input[original_idx..end_idx].iter().collect();
             if group_num > 0 && group_num < self.captures.len() {
                 self.captures[group_num] = Some(captured_text);
             }
 
-            if let Some(result_idx) = self.match_sequence(patterns, end_idx, pattern_idx + 1) {
+            if let Some(result_idx) = self.match_sequence(patterns, end_idx) {
                 return Some(result_idx);
             }
         }
@@ -684,15 +750,15 @@ impl<'a> Matcher<'a> {
         let original_snapshot = self.snapshot_captures();
 
         self.restore_captures(original_snapshot.clone());
-        if let Some(next_idx) = self.match_sequence(left, input_idx, 0) {
-            if let Some(result_idx) = self.match_sequence(patterns, next_idx, pattern_idx + 1) {
+        if let Some(next_idx) = self.match_sequence(left, input_idx) {
+            if let Some(result_idx) = self.match_sequence(patterns, next_idx) {
                 return Some(result_idx);
             }
         }
 
         self.restore_captures(original_snapshot.clone());
-        if let Some(next_idx) = self.match_sequence(right, input_idx, 0) {
-            if let Some(result_idx) = self.match_sequence(patterns, next_idx, pattern_idx + 1) {
+        if let Some(next_idx) = self.match_sequence(right, input_idx) {
+            if let Some(result_idx) = self.match_sequence(patterns, next_idx) {
                 return Some(result_idx);
             }
         }
