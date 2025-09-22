@@ -20,26 +20,36 @@ fn main() -> Result<()> {
 
     let pattern = &args[2];
 
-    let input_line = if args.len() >= 4 {
-        let filename = &args[3];
-        fs::read_to_string(filename)
-            .context(format!("Failed to read file '{}'", filename))?
-    } else {
-        let mut line = String::new();
-        io::stdin()
-            .read_line(&mut line)
-            .context("Failed to read input from stdin")?;
-        line
-    };
-
     let regex = parser::parse_regex(pattern)
         .context("Failed to parse regex pattern")?;
 
-    let line = input_line.trim_end();
-    let matches = regex.find_match(line);
+    let mut found_match = false;
 
-    if matches {
-        println!("{}", line);
+    if args.len() >= 4 {
+        let filename = &args[3];
+        let file_content = fs::read_to_string(filename)
+            .context(format!("Failed to read file '{}'", filename))?;
+
+        for line in file_content.lines() {
+            if regex.find_match(line) {
+                println!("{}", line);
+                found_match = true;
+            }
+        }
+    } else {
+        let mut input_line = String::new();
+        io::stdin()
+            .read_line(&mut input_line)
+            .context("Failed to read input from stdin")?;
+
+        let line = input_line.trim_end();
+        if regex.find_match(line) {
+            println!("{}", line);
+            found_match = true;
+        }
+    }
+
+    if found_match {
         process::exit(0);
     } else {
         process::exit(1);
