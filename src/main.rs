@@ -2,15 +2,15 @@ mod regex;
 mod parser;
 
 use std::env;
-use std::io;
+use std::fs;
 use std::process;
 use anyhow::{Context, Result};
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 3 {
-        anyhow::bail!("Usage: {} -E <pattern>", args[0]);
+    if args.len() < 4 {
+        anyhow::bail!("Usage: {} -E <pattern> <file>", args[0]);
     }
 
     if args[1] != "-E" {
@@ -18,22 +18,19 @@ fn main() -> Result<()> {
     }
 
     let pattern = &args[2];
-    println!("Input pattern: '{}'", pattern);
+    let filename = &args[3];
 
-    let mut input_line = String::new();
-    io::stdin()
-        .read_line(&mut input_line)
-        .context("Failed to read input from stdin")?;
-
-    println!("Input text: '{}'", input_line.trim());
+    let input_line = fs::read_to_string(filename)
+        .context(format!("Failed to read file '{}'", filename))?;
 
     let regex = parser::parse_regex(pattern)
         .context("Failed to parse regex pattern")?;
 
-    let matches = regex.find_match(input_line.trim_end());
-    println!("Match result: {}", matches);
+    let line = input_line.trim_end();
+    let matches = regex.find_match(line);
 
     if matches {
+        println!("{}", line);
         process::exit(0);
     } else {
         process::exit(1);

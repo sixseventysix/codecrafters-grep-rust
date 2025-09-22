@@ -32,7 +32,6 @@ pub fn parse_regex(input: &str) -> Result<Regex> {
     let context = ParseContext::new();
     match regex_with_context(input, &context) {
         Ok(("", result)) => {
-            println!("Parsed regex: {:?}", result);
             Ok(result)
         },
         Ok((remaining, _)) => {
