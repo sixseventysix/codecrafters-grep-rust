@@ -3,14 +3,15 @@ mod parser;
 
 use std::env;
 use std::fs;
+use std::io;
 use std::process;
 use anyhow::{Context, Result};
 
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
-    if args.len() < 4 {
-        anyhow::bail!("Usage: {} -E <pattern> <file>", args[0]);
+    if args.len() < 3 {
+        anyhow::bail!("Usage: {} -E <pattern> [file]", args[0]);
     }
 
     if args[1] != "-E" {
@@ -18,10 +19,18 @@ fn main() -> Result<()> {
     }
 
     let pattern = &args[2];
-    let filename = &args[3];
 
-    let input_line = fs::read_to_string(filename)
-        .context(format!("Failed to read file '{}'", filename))?;
+    let input_line = if args.len() >= 4 {
+        let filename = &args[3];
+        fs::read_to_string(filename)
+            .context(format!("Failed to read file '{}'", filename))?
+    } else {
+        let mut line = String::new();
+        io::stdin()
+            .read_line(&mut line)
+            .context("Failed to read input from stdin")?;
+        line
+    };
 
     let regex = parser::parse_regex(pattern)
         .context("Failed to parse regex pattern")?;
