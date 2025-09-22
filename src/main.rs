@@ -11,7 +11,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().collect();
 
     if args.len() < 3 {
-        anyhow::bail!("Usage: {} -E <pattern> [file]", args[0]);
+        anyhow::bail!("Usage: {} -E <pattern> [file...]", args[0]);
     }
 
     if args[1] != "-E" {
@@ -26,14 +26,22 @@ fn main() -> Result<()> {
     let mut found_match = false;
 
     if args.len() >= 4 {
-        let filename = &args[3];
-        let file_content = fs::read_to_string(filename)
-            .context(format!("Failed to read file '{}'", filename))?;
+        let filenames = &args[3..];
+        let multiple_files = filenames.len() > 1;
 
-        for line in file_content.lines() {
-            if regex.find_match(line) {
-                println!("{}", line);
-                found_match = true;
+        for filename in filenames {
+            let file_content = fs::read_to_string(filename)
+                .context(format!("Failed to read file '{}'", filename))?;
+
+            for line in file_content.lines() {
+                if regex.find_match(line) {
+                    if multiple_files {
+                        println!("{}:{}", filename, line);
+                    } else {
+                        println!("{}", line);
+                    }
+                    found_match = true;
+                }
             }
         }
     } else {
