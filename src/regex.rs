@@ -23,7 +23,7 @@ impl Regex {
 
         if let Regex::Sequence(seq) = self {
             if let Some(Regex::StartAnchor) = seq.first() {
-                return self.matches_at_with_captures(&chars, 0, &mut captures).is_some();
+                return self.match_at(&chars, 0, &mut captures).is_some();
             }
         }
 
@@ -31,7 +31,7 @@ impl Regex {
             for capture in &mut captures {
                 *capture = None;
             }
-            if self.matches_at_with_captures(&chars, i, &mut captures).is_some() {
+            if self.match_at(&chars, i, &mut captures).is_some() {
                 return true;
             }
         }
@@ -56,7 +56,7 @@ impl Regex {
         }
     }
 
-    fn matches_at_with_captures(&self, text: &[char], pos: usize, captures: &mut Vec<Option<String>>) -> Option<usize> {
+    fn match_at(&self, text: &[char], pos: usize, captures: &mut Vec<Option<String>>) -> Option<usize> {
         match self {
             Regex::Empty => Some(pos),
             Regex::Char(c) => {
@@ -74,13 +74,13 @@ impl Regex {
                 }
             }
             Regex::Sequence(regexes) => {
-                self.match_sequence_with_captures(text, pos, regexes, 0, captures)
+                self.match_sequence(text, pos, regexes, 0, captures)
             }
             Regex::Star(inner) => {
                 let mut current_pos = pos;
                 let mut last_valid = pos;
 
-                while let Some(new_pos) = inner.matches_at_with_captures(text, current_pos, captures) {
+                while let Some(new_pos) = inner.match_at(text, current_pos, captures) {
                     if new_pos == current_pos {
                         break;
                     }
@@ -94,7 +94,7 @@ impl Regex {
                 let mut current_pos = pos;
                 let mut found_match = false;
 
-                while let Some(new_pos) = inner.matches_at_with_captures(text, current_pos, captures) {
+                while let Some(new_pos) = inner.match_at(text, current_pos, captures) {
                     if new_pos == current_pos {
                         break;
                     }
@@ -109,15 +109,15 @@ impl Regex {
                 }
             }
             Regex::Question(inner) => {
-                inner.matches_at_with_captures(text, pos, captures).or(Some(pos))
+                inner.match_at(text, pos, captures).or(Some(pos))
             }
             Regex::Alternation(left, right) => {
                 let saved_captures = captures.clone();
-                if let Some(result) = left.matches_at_with_captures(text, pos, captures) {
+                if let Some(result) = left.match_at(text, pos, captures) {
                     Some(result)
                 } else {
                     *captures = saved_captures;
-                    right.matches_at_with_captures(text, pos, captures)
+                    right.match_at(text, pos, captures)
                 }
             }
             Regex::StartAnchor => {
@@ -149,52 +149,113 @@ impl Regex {
             }
             Regex::Group(inner, group_num) => {
                 let start_pos = pos;
-                println!("    Group {} attempting match at pos {} (char: {:?})", group_num, pos, text.get(pos));
-                if let Some(end_pos) = inner.matches_at_with_captures(text, pos, captures) {
+                if let Some(end_pos) = inner.match_at(text, pos, captures) {
                     let captured_text: String = text[start_pos..end_pos].iter().collect();
                     if *group_num > 0 && *group_num < captures.len() {
-                        captures[*group_num] = Some(captured_text.clone());
-                        println!("    Group {} captured: '{}'", group_num, captured_text);
+                        captures[*group_num] = Some(captured_text);
                     }
                     Some(end_pos)
                 } else {
-                    println!("    Group {} failed to match", group_num);
                     None
                 }
             }
             Regex::Backreference(group_num) => {
-                println!("    Backreference \\{} at pos {} (char: {:?})", group_num, pos, text.get(pos));
                 if *group_num > 0 && *group_num < captures.len() {
                     if let Some(ref captured_text) = captures[*group_num] {
-                        println!("    Backreference \\{} trying to match: '{}'", group_num, captured_text);
                         let captured_chars: Vec<char> = captured_text.chars().collect();
                         if pos + captured_chars.len() <= text.len() {
                             for (i, &ch) in captured_chars.iter().enumerate() {
                                 if text[pos + i] != ch {
-                                    println!("    Backreference \\{} failed at char {} (expected '{}', got '{}')",
-                                        group_num, i, ch, text[pos + i]);
                                     return None;
                                 }
                             }
-                            println!("    Backreference \\{} matched successfully", group_num);
                             Some(pos + captured_chars.len())
                         } else {
-                            println!("    Backreference \\{} failed - not enough chars left", group_num);
                             None
                         }
                     } else {
-                        println!("    Backreference \\{} matches empty string (group not captured)", group_num);
                         Some(pos)
                     }
                 } else {
-                    println!("    Backreference \\{} failed - invalid group number", group_num);
                     None
                 }
             }
         }
     }
 
-    fn match_sequence_with_captures(&self, text: &[char], pos: usize, regexes: &[Regex], index: usize, captures: &mut Vec<Option<String>>) -> Option<usize> {
+    fn collect_quantifier_positions(&self, inner: &Regex, text: &[char], start_pos: usize, captures: &mut Vec<Option<String>>) -> Vec<usize> {
+        let mut positions = vec![start_pos];
+        let mut current_pos = start_pos;
+
+        while let Some(new_pos) = inner.match_at(text, current_pos, captures) {
+            if new_pos == current_pos {
+                break;
+            }
+            current_pos = new_pos;
+            positions.push(current_pos);
+        }
+        positions
+    }
+
+    fn try_backtrack_star(&self, inner: &Regex, text: &[char], pos: usize, regexes: &[Regex], index: usize, captures: &mut Vec<Option<String>>) -> Option<usize> {
+        let positions = self.collect_quantifier_positions(inner, text, pos, captures);
+
+        for &try_pos in positions.iter().rev() {
+            let saved_captures = captures.clone();
+            if let Some(result) = self.match_sequence(text, try_pos, regexes, index + 1, captures) {
+                return Some(result);
+            }
+            *captures = saved_captures;
+        }
+        None
+    }
+
+    fn try_backtrack_plus(&self, inner: &Regex, text: &[char], pos: usize, regexes: &[Regex], index: usize, captures: &mut Vec<Option<String>>) -> Option<usize> {
+        let positions = self.collect_quantifier_positions(inner, text, pos, captures);
+
+        if positions.len() <= 1 {
+            return None;
+        }
+
+        for &try_pos in positions[1..].iter().rev() {
+            let saved_captures = captures.clone();
+            if let Some(result) = self.match_sequence(text, try_pos, regexes, index + 1, captures) {
+                return Some(result);
+            }
+            *captures = saved_captures;
+        }
+        None
+    }
+
+    fn try_backtrack_group_quantifier(&self, inner: &Regex, group_num: usize, text: &[char], pos: usize, regexes: &[Regex], index: usize, captures: &mut Vec<Option<String>>, require_match: bool) -> Option<usize> {
+        let positions = self.collect_quantifier_positions(inner, text, pos, captures);
+
+        let valid_positions = if require_match {
+            &positions[1..]
+        } else {
+            &positions[..]
+        };
+
+        if valid_positions.is_empty() {
+            return None;
+        }
+
+        for &try_pos in valid_positions.iter().rev() {
+            let saved_captures = captures.clone();
+            let captured_text: String = text[pos..try_pos].iter().collect();
+            if group_num > 0 && group_num < captures.len() {
+                captures[group_num] = Some(captured_text);
+            }
+
+            if let Some(result) = self.match_sequence(text, try_pos, regexes, index + 1, captures) {
+                return Some(result);
+            }
+            *captures = saved_captures;
+        }
+        None
+    }
+
+    fn match_sequence(&self, text: &[char], pos: usize, regexes: &[Regex], index: usize, captures: &mut Vec<Option<String>>) -> Option<usize> {
         if index >= regexes.len() {
             return Some(pos);
         }
@@ -203,122 +264,32 @@ impl Regex {
 
         match current_regex {
             Regex::Star(inner) => {
-                let mut positions = vec![pos];
-                let mut current_pos = pos;
-
-                while let Some(new_pos) = inner.matches_at_with_captures(text, current_pos, captures) {
-                    if new_pos == current_pos {
-                        break;
-                    }
-                    current_pos = new_pos;
-                    positions.push(current_pos);
-                }
-
-                for &try_pos in positions.iter().rev() {
-                    let saved_captures = captures.clone();
-                    if let Some(result) = self.match_sequence_with_captures(text, try_pos, regexes, index + 1, captures) {
-                        return Some(result);
-                    }
-                    *captures = saved_captures;
-                }
-                None
+                self.try_backtrack_star(inner, text, pos, regexes, index, captures)
             }
             Regex::Plus(inner) => {
-                let mut positions = Vec::new();
-                let mut current_pos = pos;
-
-                while let Some(new_pos) = inner.matches_at_with_captures(text, current_pos, captures) {
-                    if new_pos == current_pos {
-                        break;
-                    }
-                    current_pos = new_pos;
-                    positions.push(current_pos);
-                }
-
-                if positions.is_empty() {
-                    return None;
-                }
-
-                for &try_pos in positions.iter().rev() {
-                    let saved_captures = captures.clone();
-                    if let Some(result) = self.match_sequence_with_captures(text, try_pos, regexes, index + 1, captures) {
-                        return Some(result);
-                    }
-                    *captures = saved_captures;
-                }
-                None
+                self.try_backtrack_plus(inner, text, pos, regexes, index, captures)
             }
             Regex::Question(inner) => {
                 let saved_captures = captures.clone();
-                if let Some(match_pos) = inner.matches_at_with_captures(text, pos, captures) {
-                    if let Some(result) = self.match_sequence_with_captures(text, match_pos, regexes, index + 1, captures) {
+                if let Some(match_pos) = inner.match_at(text, pos, captures) {
+                    if let Some(result) = self.match_sequence(text, match_pos, regexes, index + 1, captures) {
                         return Some(result);
                     }
                 }
                 *captures = saved_captures;
-                self.match_sequence_with_captures(text, pos, regexes, index + 1, captures)
+                self.match_sequence(text, pos, regexes, index + 1, captures)
             }
             Regex::Group(inner, group_num) => {
                 match inner.as_ref() {
                     Regex::Star(inner_inner) => {
-                        let mut positions = vec![pos];
-                        let mut current_pos = pos;
-
-                        while let Some(new_pos) = inner_inner.matches_at_with_captures(text, current_pos, captures) {
-                            if new_pos == current_pos {
-                                break;
-                            }
-                            current_pos = new_pos;
-                            positions.push(current_pos);
-                        }
-
-                        for &try_pos in positions.iter().rev() {
-                            let saved_captures = captures.clone();
-                            let captured_text: String = text[pos..try_pos].iter().collect();
-                            if *group_num > 0 && *group_num < captures.len() {
-                                captures[*group_num] = Some(captured_text);
-                            }
-
-                            if let Some(result) = self.match_sequence_with_captures(text, try_pos, regexes, index + 1, captures) {
-                                return Some(result);
-                            }
-                            *captures = saved_captures;
-                        }
-                        None
+                        self.try_backtrack_group_quantifier(inner_inner, *group_num, text, pos, regexes, index, captures, false)
                     }
                     Regex::Plus(inner_inner) => {
-                        let mut positions = Vec::new();
-                        let mut current_pos = pos;
-
-                        while let Some(new_pos) = inner_inner.matches_at_with_captures(text, current_pos, captures) {
-                            if new_pos == current_pos {
-                                break;
-                            }
-                            current_pos = new_pos;
-                            positions.push(current_pos);
-                        }
-
-                        if positions.is_empty() {
-                            return None;
-                        }
-
-                        for &try_pos in positions.iter().rev() {
-                            let saved_captures = captures.clone();
-                            let captured_text: String = text[pos..try_pos].iter().collect();
-                            if *group_num > 0 && *group_num < captures.len() {
-                                captures[*group_num] = Some(captured_text);
-                            }
-
-                            if let Some(result) = self.match_sequence_with_captures(text, try_pos, regexes, index + 1, captures) {
-                                return Some(result);
-                            }
-                            *captures = saved_captures;
-                        }
-                        None
+                        self.try_backtrack_group_quantifier(inner_inner, *group_num, text, pos, regexes, index, captures, true)
                     }
                     _ => {
-                        if let Some(new_pos) = current_regex.matches_at_with_captures(text, pos, captures) {
-                            self.match_sequence_with_captures(text, new_pos, regexes, index + 1, captures)
+                        if let Some(new_pos) = current_regex.match_at(text, pos, captures) {
+                            self.match_sequence(text, new_pos, regexes, index + 1, captures)
                         } else {
                             None
                         }
@@ -326,8 +297,8 @@ impl Regex {
                 }
             }
             _ => {
-                if let Some(new_pos) = current_regex.matches_at_with_captures(text, pos, captures) {
-                    self.match_sequence_with_captures(text, new_pos, regexes, index + 1, captures)
+                if let Some(new_pos) = current_regex.match_at(text, pos, captures) {
+                    self.match_sequence(text, new_pos, regexes, index + 1, captures)
                 } else {
                     None
                 }
